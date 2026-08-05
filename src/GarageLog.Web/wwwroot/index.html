@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="light" />
+  <title>GarageLog</title>
+  <meta name="theme-color" content="#1e3a6d" />
+  <link rel="icon" href="/assets/favicon.ico" sizes="any" />
+  <link rel="icon" type="image/png" sizes="32x32" href="/assets/favicon-32x32.png" />
+  <link rel="icon" type="image/png" sizes="16x16" href="/assets/favicon-16x16.png" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/assets/apple-touch-icon.png" />
+  <link rel="manifest" href="/site.webmanifest" />
+  <link rel="stylesheet" href="/styles.css?v=0.7.0" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark" id="brandIcon"></span><span>GarageLog</span></div>
+      <nav id="nav" aria-label="Main navigation"></nav>
+
+      <div class="sidebar-bottom">
+        <button class="vehicle-mini" id="sidebarVehicle" type="button" data-page="Garage">
+          <span class="truck-thumb"><img id="sidebarVehicleImage" src="/assets/default-truck.png" alt=""></span>
+          <span class="vehicle-mini-copy">
+            <strong id="sidebarVehicleName">No vehicle selected</strong>
+            <small id="sidebarVehicleTrim">Complete setup to begin</small>
+            <small id="sidebarVehicleEngine">5.7L V8 HEMI</small>
+            <small id="sidebarMileage">123,482 mi</small>
+          </span>
+          <span class="chevron" aria-hidden="true">›</span>
+        </button>
+
+        <div class="quick-add">
+          <div class="quick-add-title"><span>Quick Add</span><span class="muted">Local only</span></div>
+          <button data-action="service"><span class="qa-icon" data-icon="wrench"></span>Add Service</button>
+          <button data-action="expense"><span class="qa-icon" data-icon="receipt"></span>Add Expense</button>
+          <button data-action="document"><span class="qa-icon" data-icon="file-plus"></span>Add Document</button>
+          <button data-action="reminder"><span class="qa-icon" data-icon="bell-plus"></span>Add Reminder</button>
+        </div>
+      </div>
+    </aside>
+
+    <main>
+      <header class="topbar">
+        <div class="search-shell"><span id="searchIcon"></span><input id="globalSearch" type="search" placeholder="Search GarageLog..." autocomplete="off" /></div>
+        <div class="topbar-actions">
+          <div class="notification-wrap">
+            <button class="top-icon notification-trigger" type="button" aria-label="Notifications" aria-haspopup="true" aria-expanded="false" id="notificationIcon"><span class="notification-count" id="notificationCount" hidden></span></button>
+            <section class="notification-panel" id="notificationPanel" aria-label="GarageLog notifications" hidden></section>
+          </div>
+          <div class="profile-wrap">
+            <button class="profile-trigger" id="profileTrigger" type="button" aria-haspopup="menu" aria-expanded="false">
+              <span class="avatar">L</span><span class="profile-label">Local User</span><span class="profile-chevron" id="profileChevron"></span>
+            </button>
+            <div class="profile-menu" id="profileMenu" role="menu" hidden>
+              <button type="button" data-profile-action="profile" role="menuitem"><span data-profile-icon="user"></span><span>My Profile</span></button>
+              <button type="button" data-profile-action="about" role="menuitem"><span data-profile-icon="help"></span><span>Help &amp; About</span></button>
+              <div class="profile-menu-divider"></div>
+              <button type="button" data-profile-action="logout" role="menuitem"><span data-profile-icon="logout"></span><span>Log out</span></button>
+            </div>
+          </div>
+        </div>
+      </header>
+      <section id="content" class="content"><div class="card startup-card"><h2>Loading GarageLog…</h2><p>Connecting to your local GarageLog database.</p></div></section>
+    </main>
+  </div>
+
+  <dialog id="modal">
+    <form method="dialog" id="modalForm">
+      <div class="modal-header">
+        <div><h3 id="modalTitle">Add Record</h3><p id="modalSubtitle">Saved to this GarageLog instance.</p></div>
+        <button type="button" class="icon-btn" id="modalClose" aria-label="Close"></button>
+      </div>
+      <div id="modalFields" class="modal-fields"></div>
+      <div class="modal-actions">
+        <button type="button" id="modalCancel" class="secondary">Cancel</button>
+        <button id="saveModal" type="submit" value="default" class="primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+
+  <dialog id="expenseRangeModal" class="expense-range-modal">
+    <form method="dialog" id="expenseRangeForm">
+      <div class="modal-header">
+        <div><h3 id="expenseRangeTitle">Custom Expense Range</h3><p id="expenseRangeSubtitle">Choose a custom reporting period.</p></div>
+        <button type="button" class="icon-btn" id="expenseRangeClose" aria-label="Close"></button>
+      </div>
+      <div class="expense-range-fields">
+        <label>Start Date<input id="expenseRangeStart" name="Start Date" type="date" required></label>
+        <label>End Date<input id="expenseRangeEnd" name="End Date" type="date" required></label>
+      </div>
+      <div class="expense-range-preview"><span>Only records saved inside this GarageLog instance are included.</span></div>
+      <div class="modal-actions">
+        <button type="button" id="expenseRangeCancel" class="secondary">Cancel</button>
+        <button type="submit" value="default" class="primary">Apply Range</button>
+      </div>
+    </form>
+  </dialog>
+
+
+
+  <dialog id="reminderWizard" class="wizard-dialog">
+    <form id="reminderWizardForm">
+      <div class="modal-header wizard-header">
+        <div><span class="wizard-eyebrow">GUIDED SETUP</span><h3>Create Reminder Rule</h3><p id="reminderWizardSubtitle">Choose what GarageLog should track.</p></div>
+        <button type="button" class="icon-btn" id="reminderWizardClose" aria-label="Close"></button>
+      </div>
+      <div class="wizard-progress" aria-label="Reminder wizard progress">
+        <div class="wizard-progress-step"><span class="active">1</span><small>Template</small></div><i></i>
+        <div class="wizard-progress-step"><span>2</span><small>Task</small></div><i></i>
+        <div class="wizard-progress-step"><span>3</span><small>Schedule</small></div><i></i>
+        <div class="wizard-progress-step"><span>4</span><small>Review</small></div>
+      </div>
+      <div id="reminderWizardBody" class="wizard-body"></div>
+      <div class="modal-actions wizard-actions">
+        <button type="button" id="reminderWizardCancel" class="secondary">Cancel</button>
+        <div class="wizard-spacer"></div>
+        <button type="button" id="reminderWizardBack" class="secondary">Back</button>
+        <button type="button" id="reminderWizardNext" class="primary">Next</button>
+        <button type="button" id="reminderWizardSave" class="primary" hidden>Save Reminder</button>
+      </div>
+    </form>
+  </dialog>
+
+
+
+  <dialog id="checklistDialog" class="checklist-dialog">
+    <div class="modal-header"><div><span class="wizard-eyebrow">MAINTENANCE CHECKLIST</span><h3 id="checklistDialogTitle">Checklist</h3><p id="checklistDialogSubtitle">Review the recommended steps.</p></div><button type="button" class="icon-btn" id="checklistDialogCloseX" aria-label="Close"></button></div>
+    <div id="checklistDialogBody" class="checklist-dialog-body"></div>
+    <div class="modal-actions"><button type="button" id="checklistDialogClose" class="secondary">Close</button><button type="button" id="checklistDialogSave" class="primary" hidden>Save Progress</button></div>
+  </dialog>
+
+  <dialog id="exportRecordsDialog" class="export-dialog">
+    <form id="exportRecordsForm">
+      <div class="modal-header">
+        <div><span class="wizard-eyebrow">GARAGE EXPORT</span><h3>Export Vehicle Records</h3><p>Select the local records and format to include.</p></div>
+        <button type="button" class="icon-btn" id="exportRecordsClose" aria-label="Close"></button>
+      </div>
+      <div class="export-dialog-body">
+        <fieldset><legend>Record Types</legend>
+          <label class="export-check"><input type="checkbox" name="recordType" value="maintenance" checked><span>Maintenance &amp; service history</span></label>
+          <label class="export-check"><input type="checkbox" name="recordType" value="expenses" checked><span>Expenses &amp; fuel costs</span></label>
+          <label class="export-check"><input type="checkbox" name="recordType" value="reminders" checked><span>Reminder rules</span></label>
+          <label class="export-check"><input type="checkbox" name="recordType" value="documents"><span>Document metadata</span></label>
+        </fieldset>
+        <fieldset><legend>Format</legend>
+          <label class="export-format"><input type="radio" name="format" value="csv" checked><span><strong>CSV</strong><small>Spreadsheet-friendly records</small></span></label>
+          <label class="export-format"><input type="radio" name="format" value="json"><span><strong>JSON</strong><small>Complete structured backup</small></span></label>
+        </fieldset>
+        <div class="export-privacy-note">Everything is generated in your browser from this local GarageLog instance. Nothing is uploaded externally.</div>
+      </div>
+      <div class="modal-actions"><button type="button" id="exportRecordsCancel" class="secondary">Cancel</button><button type="submit" class="primary">Export Records</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="infoModal" class="info-dialog">
+    <div class="modal-header"><div><h3 id="infoModalTitle">GarageLog</h3><p id="infoModalSubtitle">Local account information.</p></div><button type="button" class="icon-btn" id="infoModalClose" aria-label="Close"></button></div>
+    <div id="infoModalBody" class="info-modal-body"></div>
+    <div class="modal-actions"><button type="button" id="infoModalSecondary" class="secondary">Close</button><button type="button" id="infoModalPrimary" class="primary" hidden>Continue</button></div>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="/app.js?v=0.7.0"></script>
+</body>
+</html>

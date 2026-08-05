@@ -1,0 +1,20 @@
+GarageLog 0.7.0 Docker build and deployment package
+Public repository: https://github.com/Shredder5262/GarageLog
+Image tag: ghcr.io/shredder5262/garagelog:0.7.0
+
+Included:
+- Dockerfile
+- Local-build Compose configuration
+- GHCR deployment Compose configuration
+- Environment-variable example
+- GarageLog application source required by the Docker build
+- Docker usage documentation
+
+Explicitly excluded:
+- Databases and SQLite sidecar files
+- Uploaded documents and images
+- Logs and backups
+- Environment files containing secrets
+- PowerShell, batch, and command scripts
+- Git metadata and GitHub workflows
+- Development caches and build output

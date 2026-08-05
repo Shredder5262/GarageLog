@@ -1,0 +1,65 @@
+name: Validate release safety
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+          cache: true
+          cache-dependency-path: src/GarageLog.Web/GarageLog.Web.csproj
+
+      - name: Reject private or release-only files
+        shell: bash
+        run: |
+          set -euo pipefail
+          forbidden_files="$(find . -type f \
+            \( -iname '*.db' -o -iname '*.db-*' -o -iname '*.sqlite*' -o -iname '*.log' \
+               -o -iname '.env' -o -iname '*.zip' -o -iname '*.7z' -o -iname '*.ps1' \
+               -o -iname '*.pfx' -o -iname '*.p12' -o -iname '*.key' -o -iname '*.pem' \) \
+            -not -path './.git/*' -print)"
+          if [[ -n "$forbidden_files" ]]; then
+            printf 'Forbidden files found:\n%s\n' "$forbidden_files"
+            exit 1
+          fi
+
+      - name: Scan source for common secret and local-path markers
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -RInE \
+            'C:\\Users\\|/Users/|BEGIN (RSA|OPENSSH|EC) PRIVATE KEY|api[_-]?key[[:space:]]*[:=]|client[_-]?secret[[:space:]]*[:=]' \
+            . --exclude-dir=.git --exclude='RELEASE-CHECKLIST.md' --exclude='validate.yml'; then
+            echo 'Potential local path or secret marker found.'
+            exit 1
+          fi
+
+      - name: Validate JavaScript
+        run: node --check src/GarageLog.Web/wwwroot/app.js
+
+      - name: Restore and build
+        run: |
+          dotnet restore src/GarageLog.Web/GarageLog.Web.csproj --locked-mode || dotnet restore src/GarageLog.Web/GarageLog.Web.csproj
+          dotnet build src/GarageLog.Web/GarageLog.Web.csproj --configuration Release --no-restore
+
+      - name: Build container
+        run: docker build --pull --tag garagelog:validation .

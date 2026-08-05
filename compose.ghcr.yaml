@@ -1,0 +1,35 @@
+services:
+  garagelog:
+    image: "${GARAGELOG_IMAGE:-ghcr.io/shredder5262/garagelog:0.7.0}"
+    pull_policy: always
+    container_name: garagelog
+    restart: unless-stopped
+    init: true
+    ports:
+      - "${GARAGELOG_BIND_ADDRESS:-127.0.0.1}:${GARAGELOG_PORT:-6001}:6001"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      GARAGELOG_UPDATE_REPOSITORY: "${GARAGELOG_UPDATE_REPOSITORY:-Shredder5262/GarageLog}"
+      GARAGELOG_REQUIRE_HTTPS: "${GARAGELOG_REQUIRE_HTTPS:-false}"
+      GARAGELOG_TRUSTED_PROXIES: "${GARAGELOG_TRUSTED_PROXIES:-}"
+    volumes:
+      - garagelog-data:/app/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:6001/healthz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 25s
+      retries: 3
+    stop_grace_period: 30s
+
+volumes:
+  garagelog-data:
+    name: garagelog-data
