@@ -2370,7 +2370,7 @@
 
 
 
-/* 0.7.0 - GitHub release update notice */
+/* 0.7.1 - GitHub release update notice */
 .update-available-banner{display:flex;align-items:center;gap:12px;margin:0 0 16px;padding:12px 14px;border:1px solid #c7d2fe;border-radius:14px;background:#eef2ff;color:#1e293b}
 .update-available-banner>div{display:flex;flex:1 1 auto;min-width:0;flex-direction:column;gap:2px}
 .update-available-banner strong{font-size:14px}.update-available-banner small{color:#52627a}

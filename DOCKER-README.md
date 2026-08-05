@@ -1,4 +1,4 @@
-# GarageLog 0.7.0 Docker Package
+# GarageLog 0.7.1 Docker Package
 
 This package is a clean Docker build context and deployment bundle. It contains application source code and Docker configuration only. It does not contain a GarageLog database, uploaded documents, images, logs, passwords, secrets, PowerShell files, or personal data.
 
@@ -28,13 +28,13 @@ Build and push the versioned image:
 
 ```bash
 docker compose build
-docker push ghcr.io/shredder5262/garagelog:0.7.0
+docker push ghcr.io/shredder5262/garagelog:0.7.1
 ```
 
 Optionally publish the same image as `latest`:
 
 ```bash
-docker tag ghcr.io/shredder5262/garagelog:0.7.0 ghcr.io/shredder5262/garagelog:latest
+docker tag ghcr.io/shredder5262/garagelog:0.7.1 ghcr.io/shredder5262/garagelog:latest
 docker push ghcr.io/shredder5262/garagelog:latest
 ```
 

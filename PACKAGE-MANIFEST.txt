@@ -1,20 +1,24 @@
-GarageLog 0.7.0 Docker build and deployment package
-Public repository: https://github.com/Shredder5262/GarageLog
-Image tag: ghcr.io/shredder5262/garagelog:0.7.0
-
-Included:
-- Dockerfile
-- Local-build Compose configuration
-- GHCR deployment Compose configuration
-- Environment-variable example
-- GarageLog application source required by the Docker build
-- Docker usage documentation
-
-Explicitly excluded:
-- Databases and SQLite sidecar files
-- Uploaded documents and images
-- Logs and backups
-- Environment files containing secrets
-- PowerShell, batch, and command scripts
-- Git metadata and GitHub workflows
-- Development caches and build output
+.dockerignore
+.env.example
+DOCKER-README.md
+Dockerfile
+RELEASE-NOTES.md
+VERSION
+compose.ghcr.yaml
+compose.yaml
+src/GarageLog.Web/GarageLog.Web.csproj
+src/GarageLog.Web/Program.cs
+src/GarageLog.Web/wwwroot/app.js
+src/GarageLog.Web/wwwroot/apple-touch-icon.png
+src/GarageLog.Web/wwwroot/assets/android-chrome-192x192.png
+src/GarageLog.Web/wwwroot/assets/android-chrome-512x512.png
+src/GarageLog.Web/wwwroot/assets/apple-touch-icon.png
+src/GarageLog.Web/wwwroot/assets/favicon-16x16.png
+src/GarageLog.Web/wwwroot/assets/favicon-32x32.png
+src/GarageLog.Web/wwwroot/assets/favicon.ico
+src/GarageLog.Web/wwwroot/assets/garagelog-app-icon.png
+src/GarageLog.Web/wwwroot/assets/garagelog-logo.png
+src/GarageLog.Web/wwwroot/favicon.ico
+src/GarageLog.Web/wwwroot/index.html
+src/GarageLog.Web/wwwroot/site.webmanifest
+src/GarageLog.Web/wwwroot/styles.css

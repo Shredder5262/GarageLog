@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: ghcr.io/shredder5262/garagelog:0.7.0
+    image: ghcr.io/shredder5262/garagelog:0.7.1
     container_name: garagelog
     restart: unless-stopped
     init: true
