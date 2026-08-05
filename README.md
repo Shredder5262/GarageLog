@@ -2,6 +2,39 @@
 
 GarageLog is a local-first, self-hosted vehicle maintenance and document-tracking application. It stores its database, documents, vehicle images, profile images, OCR text, and authentication records on the GarageLog host.
 
+## Interface preview
+
+<p align="center">
+  <img src="docs/screenshots/dashboard.png" alt="GarageLog dashboard showing vehicle status, maintenance, expenses, documents, and reminders" width="100%">
+</p>
+
+<details>
+<summary><strong>View more GarageLog screenshots</strong></summary>
+
+<br>
+
+### My Garage
+
+<img src="docs/screenshots/garage.png" alt="GarageLog My Garage vehicle management screen" width="100%">
+
+### Maintenance
+
+<img src="docs/screenshots/maintenance.png" alt="GarageLog maintenance tracking screen" width="100%">
+
+### Expenses
+
+<img src="docs/screenshots/expenses.png" alt="GarageLog expense tracking and spending analysis screen" width="100%">
+
+### Reminders
+
+<img src="docs/screenshots/reminders.png" alt="GarageLog maintenance and ownership reminders screen" width="100%">
+
+### Reports
+
+<img src="docs/screenshots/reports.png" alt="GarageLog reports and vehicle cost insights screen" width="100%">
+
+</details>
+
 ## Docker quick start
 
 1. Copy `.env.example` to `.env` and set `GARAGELOG_UPDATE_REPOSITORY` after creating the GitHub repository.
