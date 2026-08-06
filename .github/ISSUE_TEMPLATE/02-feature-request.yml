@@ -1,0 +1,201 @@
+name: Feature request
+description: Propose a GarageLog improvement with enough detail to evaluate it
+title: "[Feature]: "
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A useful feature request explains the problem before prescribing the solution. GarageLog is local-first and self-hosted, so proposals should preserve data ownership, avoid unnecessary external services, and minimize risk to existing user data.
+
+  - type: input
+    id: summary
+    attributes:
+      label: Feature summary
+      description: Describe the request in one sentence.
+      placeholder: "Example: Add a vehicle-specific maintenance checklist that can be reused."
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: Describe the real task, frustration, missing capability, or failure mode. Avoid starting with implementation details.
+      placeholder: "Today, I need to... The problem is..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: users
+    attributes:
+      label: Who benefits, and when?
+      description: Identify the affected user, vehicle type, and situation.
+      placeholder: "Example: Owners tracking multiple vehicles when preparing for seasonal maintenance."
+    validations:
+      required: true
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: Current workaround
+      description: How is this handled today, inside or outside GarageLog? What is inadequate about that approach?
+    validations:
+      required: true
+
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Proposed behavior
+      description: Explain what the user should be able to do and what GarageLog should do in response.
+    validations:
+      required: true
+
+  - type: textarea
+    id: flow
+    attributes:
+      label: Example user flow
+      description: Walk through the feature from the user's point of view.
+      value: |
+        1. The user...
+        2. GarageLog...
+        3. The user sees...
+    validations:
+      required: true
+
+  - type: textarea
+    id: mvp
+    attributes:
+      label: Minimum useful version
+      description: What is the smallest implementation that would solve the core problem?
+    validations:
+      required: true
+
+  - type: textarea
+    id: out_of_scope
+    attributes:
+      label: What should be out of scope?
+      description: Name related capabilities that are not required for the first version.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Primary area
+      options:
+        - Dashboard
+        - Garage / vehicles
+        - Maintenance
+        - Expenses
+        - Documents / previews / OCR
+        - Reminders / calendar
+        - Reports / export / printing
+        - Authentication / profile
+        - Docker / deployment
+        - OBD-II / telemetry
+        - Cross-cutting / multiple areas
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: vehicle_types
+    attributes:
+      label: Vehicle types affected
+      multiple: true
+      options:
+        - Cars
+        - Trucks
+        - Motorcycles
+        - Trailers
+        - Electric vehicles
+        - All vehicle types
+        - Not vehicle-specific
+
+  - type: textarea
+    id: privacy
+    attributes:
+      label: Privacy and data ownership impact
+      description: Would this collect new data, call an external service, require an account, expose network access, or change where data is stored? State "None" when there is no impact.
+      placeholder: "Example: No external service; data remains in the existing local SQLite database."
+    validations:
+      required: true
+
+  - type: textarea
+    id: deployment
+    attributes:
+      label: Self-hosting and deployment impact
+      description: Would this require a new container, port, dependency, environment variable, storage mount, browser permission, or platform-specific tool? State "None" when there is no impact.
+    validations:
+      required: true
+
+  - type: textarea
+    id: existing_data
+    attributes:
+      label: Existing-data and migration impact
+      description: Could this modify, migrate, hide, archive, or delete existing records? How should rollback or compatibility work?
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: List observable conditions that would make the feature complete.
+      value: |
+        - [ ]
+        - [ ]
+        - [ ]
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What other designs or approaches were considered, and why are they weaker?
+
+  - type: textarea
+    id: mockups
+    attributes:
+      label: Mockups, examples, or references
+      description: Drag screenshots or diagrams here. Explain which details matter instead of relying on the image alone.
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Why now?
+      description: Choose the strongest honest reason.
+      options:
+        - Blocks a common workflow
+        - Prevents data loss or incorrect records
+        - Removes substantial repetitive work
+        - Improves usability but has a workaround
+        - Long-term idea with no immediate need
+    validations:
+      required: true
+
+  - type: dropdown
+    id: contribution
+    attributes:
+      label: Contribution interest
+      options:
+        - I can submit a pull request
+        - I can help test
+        - I can provide mockups or requirements
+        - I am only proposing the idea
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Submission checks
+      options:
+        - label: I searched existing issues and the roadmap for similar requests.
+          required: true
+        - label: I described the underlying problem, not only a preferred implementation.
+          required: true
+        - label: I considered GarageLog's local-first, self-hosted, privacy-focused design.
+          required: true
+        - label: I understand that submitting a request does not guarantee implementation.
+          required: true

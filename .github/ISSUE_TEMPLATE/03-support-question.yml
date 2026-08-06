@@ -1,0 +1,77 @@
+name: Support question
+description: Ask for help using, configuring, or troubleshooting GarageLog
+title: "[Question]: "
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for setup or usage questions that are not confirmed bugs. Do not include passwords, tokens, private documents, addresses, or personally identifying vehicle records.
+
+  - type: input
+    id: goal
+    attributes:
+      label: What are you trying to accomplish?
+      placeholder: "Example: Use a visible Windows data folder with Docker Compose."
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: GarageLog version
+      placeholder: "Example: 0.7.5"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: installation
+    attributes:
+      label: Installation method
+      options:
+        - Docker / Docker Compose using GHCR image
+        - Docker built from local source
+        - dotnet run from source
+        - Not installed yet
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: tried
+    attributes:
+      label: What have you tried?
+      description: Include commands, settings, and the result of each attempt.
+    validations:
+      required: true
+
+  - type: textarea
+    id: blocker
+    attributes:
+      label: Where are you stuck?
+      description: Include the exact point where the result differs from what you expected.
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: Relevant output
+      description: Paste relevant console or log output after removing sensitive information.
+      render: shell
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Include operating system, browser, reverse proxy, storage setup, or other relevant details.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Submission checks
+      options:
+        - label: I searched existing issues and the README first.
+          required: true
+        - label: I removed secrets and personal information.
+          required: true

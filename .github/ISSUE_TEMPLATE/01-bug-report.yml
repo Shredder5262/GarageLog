@@ -1,0 +1,159 @@
+name: Bug report
+description: Report a reproducible problem in GarageLog
+title: "[Bug]: "
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve GarageLog. Please provide enough detail to reproduce the problem without including passwords, private documents, registration numbers, addresses, or other sensitive data.
+
+  - type: input
+    id: version
+    attributes:
+      label: GarageLog version
+      description: Find this in Help / About or the health endpoint.
+      placeholder: "Example: 0.7.5"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: installation
+    attributes:
+      label: Installation method
+      description: How are you running GarageLog?
+      options:
+        - Docker / Docker Compose using GHCR image
+        - Docker built from local source
+        - dotnet run from source
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Host and browser
+      description: Include the host operating system and browser.
+      placeholder: "Example: Windows 11 with Docker Desktop; Chrome 148"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      options:
+        - Dashboard
+        - Garage / vehicles
+        - Maintenance
+        - Expenses
+        - Documents / previews / OCR
+        - Reminders / calendar
+        - Reports / export / printing
+        - Authentication / profile
+        - Docker / startup / networking
+        - Update notifications / versioning
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: data_state
+    attributes:
+      label: Data state
+      description: This helps distinguish migration problems from fresh-install problems.
+      options:
+        - Existing real data
+        - Existing test data
+        - Fresh installation
+        - Unsure
+    validations:
+      required: true
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Describe the failure and when you first noticed it.
+      placeholder: "Describe the visible problem, error message, or incorrect behavior."
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Give the shortest reliable sequence that triggers the problem.
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should GarageLog have done instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What did GarageLog do, including exact messages where useful?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: frequency
+    attributes:
+      label: How often does it happen?
+      options:
+        - Every time
+        - Often
+        - Intermittently
+        - Happened once
+        - Unsure
+    validations:
+      required: true
+
+  - type: textarea
+    id: regression
+    attributes:
+      label: Did this work before?
+      description: If yes, identify the last known working GarageLog version or change.
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Paste only the relevant lines. Remove secrets and personal information first.
+      render: shell
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots or recordings
+      description: Drag files here. Redact personal vehicle, account, and document information.
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional context
+      description: Include anything that may narrow the cause, such as proxy use, unusual storage mounts, or recent upgrades.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Submission checks
+      options:
+        - label: I searched existing issues for the same problem.
+          required: true
+        - label: I removed passwords, tokens, private documents, addresses, and other sensitive data.
+          required: true
+        - label: I understand that a bug report should describe one primary problem.
+          required: true
