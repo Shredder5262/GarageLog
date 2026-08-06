@@ -2377,3 +2377,6 @@
 .update-available-banner .secondary{display:inline-flex;align-items:center;gap:7px;white-space:nowrap;text-decoration:none}.update-available-banner .secondary svg{width:15px;height:15px}
 .update-available-banner .icon-button{flex:0 0 auto;width:34px;height:34px;padding:8px;border-radius:9px;background:transparent;box-shadow:none}.update-available-banner .icon-button svg{width:16px;height:16px}
 @media(max-width:720px){.update-available-banner{align-items:flex-start;flex-wrap:wrap}.update-available-banner>div{min-width:calc(100% - 92px)}.update-available-banner .secondary{margin-left:46px}}
+
+/* 0.7.6 - Contextual document metadata */
+.document-context-field[hidden],.document-linked-expense[hidden]{display:none!important}

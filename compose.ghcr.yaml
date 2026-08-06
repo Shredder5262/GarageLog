@@ -1,6 +1,6 @@
 services:
   garagelog:
-    image: "${GARAGELOG_IMAGE:-ghcr.io/shredder5262/garagelog:0.7.1}"
+    image: "${GARAGELOG_IMAGE:-ghcr.io/shredder5262/garagelog:latest}"
     pull_policy: always
     container_name: garagelog
     restart: unless-stopped
