@@ -183,13 +183,30 @@ app.UseStaticFiles(new StaticFileOptions
 });
 app.Use(async (context, next) =>
 {
+    var isDocumentPreview =
+        context.Request.Path.StartsWithSegments("/api/documents")
+        && context.Request.Path.Value?.EndsWith(
+            "/preview",
+            StringComparison.OrdinalIgnoreCase) == true;
+
     context.Response.Headers["X-Content-Type-Options"] = "nosniff";
-    context.Response.Headers["X-Frame-Options"] = "DENY";
+    context.Response.Headers["X-Frame-Options"] =
+        isDocumentPreview ? "SAMEORIGIN" : "DENY";
     context.Response.Headers["Referrer-Policy"] = "no-referrer";
-    context.Response.Headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), payment=(), usb=()";
+    context.Response.Headers["Permissions-Policy"] =
+        "camera=(), microphone=(), geolocation=(), payment=(), usb=()";
     context.Response.Headers["Cross-Origin-Opener-Policy"] = "same-origin";
     context.Response.Headers["Cross-Origin-Resource-Policy"] = "same-origin";
-    context.Response.Headers["Content-Security-Policy"] = "default-src 'self'; base-uri 'self'; object-src 'none'; frame-src 'self' blob:; child-src 'self' blob:; frame-ancestors 'none'; form-action 'self'; connect-src 'self'; img-src 'self' data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'";
+
+    var frameAncestors = isDocumentPreview ? "'self'" : "'none'";
+    context.Response.Headers["Content-Security-Policy"] =
+        $"default-src 'self'; base-uri 'self'; object-src 'none'; " +
+        $"frame-src 'self' blob:; child-src 'self' blob:; " +
+        $"frame-ancestors {frameAncestors}; form-action 'self'; " +
+        $"connect-src 'self'; img-src 'self' data: blob:; " +
+        $"font-src 'self' data:; style-src 'self' 'unsafe-inline'; " +
+        $"script-src 'self' 'unsafe-inline'";
+
     await next();
 });
 app.UseRateLimiter();
