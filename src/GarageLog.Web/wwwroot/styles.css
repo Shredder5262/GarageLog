@@ -2407,3 +2407,134 @@
   .nav-btn{min-height:43px;padding:5px 11px}
   .nav-menu-icon{width:27px;height:27px;flex-basis:27px}
 }
+/* GarageLog 0.7.7 - document selection bulk actions */
+.document-selection-dialog .modal-actions{
+  align-items:center;
+  flex-wrap:wrap;
+}
+.selection-bulk-actions{
+  display:flex;
+  gap:8px;
+  margin-right:auto;
+}
+@media(max-width:620px){
+  .selection-bulk-actions{
+    width:100%;
+  }
+  .selection-bulk-actions .secondary{
+    flex:1;
+  }
+}
+/* GarageLog 0.7.7 - refined document share dialog */
+.document-share-dialog{
+  width:min(720px,calc(100vw - 32px));
+  max-height:calc(100vh - 32px);
+  border-radius:18px;
+  overflow:hidden;
+}
+.document-share-dialog .modal-header{
+  padding:19px 20px 16px;
+}
+.document-share-dialog .share-dialog-body{
+  padding:18px 20px;
+  gap:14px;
+}
+.document-share-dialog .share-create-panel{
+  display:grid;
+  grid-template-columns:auto minmax(0,1fr) auto;
+  align-items:center;
+  gap:14px;
+  padding:15px 16px;
+  border-radius:14px;
+}
+.document-share-dialog .share-create-panel > div{
+  min-width:0;
+}
+.document-share-dialog .share-create-panel strong{
+  display:block;
+  margin-bottom:4px;
+}
+.document-share-dialog .share-create-panel p{
+  margin:0;
+  line-height:1.45;
+}
+.document-share-dialog .create-share,
+.document-share-dialog .copy-share,
+.document-share-dialog .generate-qr,
+.document-share-dialog .revoke-share,
+.document-share-dialog .share-done,
+.document-share-dialog .share-link-actions .secondary,
+.document-share-dialog .share-link-actions a.secondary{
+  min-height:40px;
+  padding:0 15px;
+  border-radius:10px;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  gap:8px;
+  white-space:nowrap;
+  line-height:1;
+  font-weight:650;
+}
+.document-share-dialog .create-share{
+  min-width:128px;
+}
+.document-share-dialog .create-share svg,
+.document-share-dialog .copy-share svg,
+.document-share-dialog .generate-qr svg,
+.document-share-dialog .share-link-actions svg{
+  width:18px;
+  height:18px;
+  flex:0 0 18px;
+}
+.document-share-dialog .share-link-actions{
+  display:flex;
+  flex-wrap:wrap;
+  align-items:center;
+  gap:9px;
+}
+.document-share-dialog .share-link-actions .revoke-share{
+  margin-left:auto;
+}
+.document-share-dialog .share-qr-placeholder{
+  min-height:74px;
+  border-radius:13px;
+}
+.document-share-dialog .share-privacy-note{
+  padding:12px 14px;
+  border-radius:12px;
+  line-height:1.45;
+}
+.document-share-dialog .modal-actions{
+  padding:15px 20px;
+  border-top:1px solid var(--border,#dbe3ee);
+  background:#fff;
+}
+.document-share-dialog .share-done{
+  min-width:82px;
+}
+@media(max-width:620px){
+  .document-share-dialog{
+    width:calc(100vw - 18px);
+    max-height:calc(100vh - 18px);
+    border-radius:15px;
+  }
+  .document-share-dialog .share-create-panel{
+    grid-template-columns:auto minmax(0,1fr);
+  }
+  .document-share-dialog .create-share{
+    grid-column:1/-1;
+    width:100%;
+  }
+  .document-share-dialog .share-link-actions{
+    display:grid;
+    grid-template-columns:1fr 1fr;
+  }
+  .document-share-dialog .share-link-actions .secondary,
+  .document-share-dialog .share-link-actions a.secondary{
+    width:100%;
+  }
+  .document-share-dialog .share-link-actions .revoke-share{
+    margin-left:0;
+  }
+}

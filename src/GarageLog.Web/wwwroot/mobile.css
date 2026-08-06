@@ -1,0 +1,553 @@
+/*
+ GarageLog mobile presentation layer
+ Desktop remains the default. Every layout override is restricted to 760px or narrower.
+*/
+
+.mobile-menu-button,
+.mobile-page-title,
+.mobile-nav-backdrop {
+  display: none;
+}
+
+@media (max-width: 760px) {
+  html,
+  body {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+
+  body.mobile-nav-open {
+    overflow: hidden;
+    touch-action: none;
+  }
+
+  .app-shell {
+    display: block;
+    min-height: 100dvh;
+  }
+
+  main {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    width: min(322px, 88vw);
+    height: 100dvh;
+    padding: max(16px, env(safe-area-inset-top)) 13px max(16px, env(safe-area-inset-bottom));
+    transform: translateX(-104%);
+    transition: transform .22s ease;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    z-index: 110;
+    box-shadow: 18px 0 48px rgb(15 23 42 / .20);
+  }
+
+  body.mobile-nav-open .sidebar {
+    transform: translateX(0);
+  }
+
+  .sidebar .brand {
+    min-height: 58px;
+  }
+
+  .sidebar nav {
+    gap: 4px;
+  }
+
+  .sidebar .nav-btn {
+    min-height: 48px;
+    padding: 8px 12px;
+  }
+
+  .sidebar-bottom {
+    margin-top: 18px;
+    padding-bottom: 4px;
+  }
+
+  .mobile-nav-backdrop {
+    position: fixed;
+    inset: 0;
+    display: block;
+    border: 0;
+    padding: 0;
+    background: rgb(15 23 42 / .52);
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transition: opacity .2s ease, visibility .2s ease;
+    z-index: 105;
+  }
+
+  body.mobile-nav-open .mobile-nav-backdrop {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+  }
+
+  .topbar {
+    height: 60px;
+    min-height: 60px;
+    padding: 0 10px max(0px, env(safe-area-inset-right)) 10px;
+    gap: 8px;
+    z-index: 50;
+  }
+
+  .mobile-menu-button {
+    display: inline-grid;
+    place-items: center;
+    width: 42px;
+    height: 42px;
+    flex: 0 0 42px;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: 11px;
+    background: #fff;
+    color: #334155;
+    cursor: pointer;
+  }
+
+  .mobile-menu-button:active {
+    background: var(--blue-soft);
+    color: var(--blue);
+  }
+
+  .mobile-menu-button svg {
+    width: 21px;
+    height: 21px;
+  }
+
+  .mobile-page-title {
+    display: block;
+    max-width: 112px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #1e293b;
+    font-size: 14px;
+    letter-spacing: -.1px;
+  }
+
+  .search-shell {
+    width: auto;
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+
+  .search-shell > span {
+    left: 11px;
+  }
+
+  .topbar input {
+    min-width: 0;
+    padding: 10px 10px 10px 35px;
+  }
+
+  .topbar-actions {
+    flex: 0 0 auto;
+    gap: 2px;
+  }
+
+  .profile-trigger {
+    min-width: 42px;
+    padding: 5px;
+  }
+
+  .profile-label,
+  .profile-chevron {
+    display: none !important;
+  }
+
+  .profile-menu {
+    position: fixed;
+    top: 58px;
+    right: 8px;
+    left: auto;
+    width: min(270px, calc(100vw - 16px));
+  }
+
+  .notification-panel {
+    position: fixed !important;
+    top: 58px !important;
+    right: 8px !important;
+    left: 8px !important;
+    width: auto !important;
+    max-height: calc(100dvh - 70px);
+    overflow-y: auto;
+  }
+
+  .content {
+    width: 100%;
+    max-width: none;
+    padding: 15px 12px calc(30px + env(safe-area-inset-bottom));
+  }
+
+  .page-head {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+    gap: 12px;
+    margin-bottom: 15px;
+  }
+
+  .page-head h1 {
+    font-size: 23px;
+  }
+
+  .page-head > div:last-child,
+  .page-actions,
+  .header-actions,
+  .section-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .page-head .primary,
+  .page-head .secondary {
+    min-height: 42px;
+  }
+
+  .summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .dashboard-main,
+  .dashboard-columns,
+  .layout,
+  .report-grid,
+  .expense-dashboard-grid,
+  .expense-main-grid,
+  .expense-budget-main-grid,
+  .recurring-budget-layout,
+  .expense-budget-kpis,
+  .documents-page-grid,
+  .document-page-grid,
+  .maintenance-page-grid,
+  .reminders-page-grid,
+  .reminder-page-grid,
+  .profile-layout,
+  .account-layout,
+  .report-library-layout,
+  .reports-layout {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  .dashboard-main,
+  .dashboard-columns,
+  .layout {
+    gap: 12px;
+  }
+
+  .card {
+    border-radius: 12px;
+    padding: 14px;
+  }
+
+  .vehicle-banner {
+    min-height: 0;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .vehicle-art {
+    height: 165px;
+  }
+
+  .vehicle-copy {
+    padding: 18px;
+  }
+
+  .vehicle-copy h2 {
+    font-size: 21px;
+  }
+
+  .vehicle-copy .subline {
+    margin-bottom: 16px;
+  }
+
+  .vehicle-specs {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 13px 10px;
+  }
+
+  .garage-card {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+
+  .garage-card .vehicle-art {
+    height: 175px;
+  }
+
+  .garage-details {
+    padding: 18px;
+  }
+
+  .garage-title {
+    align-items: flex-start;
+  }
+
+  .tabs,
+  .document-category-tabs,
+  .report-template-tabs {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+    padding-bottom: 3px;
+  }
+
+  .tabs::-webkit-scrollbar,
+  .document-category-tabs::-webkit-scrollbar,
+  .report-template-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .tabs > *,
+  .document-category-tabs > *,
+  .report-template-tabs > * {
+    flex: 0 0 auto;
+  }
+
+  .table-card,
+  .documents-table-scroll,
+  .expense-table-scroll,
+  .maintenance-table-scroll {
+    max-width: 100%;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .data-table {
+    min-width: 720px;
+  }
+
+  .documents-table-card,
+  .expense-list-card,
+  .maintenance-list-card {
+    height: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+  }
+
+  .table-toolbar,
+  .section-title,
+  .expense-card-heading,
+  .document-card-heading {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .calendar-strip {
+    grid-template-columns: repeat(5, minmax(92px, 1fr));
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+  }
+
+  .chart-card,
+  .expense-chart-card,
+  .fuel-chart-card {
+    min-height: 240px;
+  }
+
+  .chart,
+  .expense-bars {
+    min-width: 540px;
+  }
+
+  .expense-chart-scroll,
+  .chart-scroll {
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+  }
+
+  .donut-wrap,
+  .expense-donut-layout {
+    grid-template-columns: minmax(0, 1fr) !important;
+    justify-items: center;
+  }
+
+  .donut-wrap .legend,
+  .expense-category-legend {
+    width: 100%;
+  }
+
+  .maintenance-preview-row {
+    grid-template-columns: 36px minmax(0, 1fr);
+  }
+
+  .maintenance-preview-row > :last-child {
+    grid-column: 2;
+    justify-self: start;
+  }
+
+  .side-row {
+    align-items: flex-start;
+  }
+
+  dialog,
+  dialog.document-share-dialog,
+  dialog.document-selection-dialog,
+  dialog.expense-dialog,
+  dialog.wizard-dialog,
+  dialog.checklist-dialog,
+  dialog.export-dialog,
+  dialog.info-dialog {
+    width: calc(100vw - 12px) !important;
+    max-width: none !important;
+    max-height: calc(100dvh - 12px) !important;
+    margin: 6px auto;
+    border-radius: 14px;
+  }
+
+  dialog > form,
+  dialog #modalForm,
+  dialog #reminderWizardForm,
+  dialog #exportRecordsForm {
+    max-height: calc(100dvh - 12px);
+    display: flex;
+    flex-direction: column;
+  }
+
+  .modal-header {
+    flex: 0 0 auto;
+    padding: 15px 15px 13px;
+  }
+
+  .modal-fields,
+  .wizard-body,
+  .checklist-dialog-body,
+  .export-dialog-body,
+  .info-modal-body,
+  .share-dialog-body,
+  .document-selection-list,
+  .expense-entry-workspace {
+    min-height: 0;
+    overflow-y: auto;
+    padding: 15px;
+  }
+
+  .modal-fields,
+  .expense-entry-grid,
+  .budget-settings-grid,
+  .budget-category-input-grid {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  .modal-fields label.full {
+    grid-column: auto;
+  }
+
+  .modal-actions {
+    position: sticky;
+    bottom: 0;
+    flex: 0 0 auto;
+    flex-wrap: wrap;
+    padding: 12px 15px calc(12px + env(safe-area-inset-bottom));
+    background: #fff;
+    z-index: 2;
+  }
+
+  .modal-actions .primary,
+  .modal-actions .secondary,
+  .modal-actions .danger {
+    min-height: 42px;
+  }
+
+  .wizard-progress {
+    overflow-x: auto;
+    padding-inline: 12px;
+  }
+
+  .wizard-actions .wizard-spacer {
+    display: none;
+  }
+
+  .share-link-actions,
+  .selection-bulk-actions {
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+  }
+
+  .share-link-actions > *,
+  .selection-bulk-actions > * {
+    width: 100%;
+  }
+
+  .document-selection-list label {
+    align-items: flex-start;
+  }
+
+  .toast {
+    right: 12px;
+    bottom: calc(12px + env(safe-area-inset-bottom));
+    left: 12px;
+    width: auto;
+    text-align: center;
+  }
+
+  button,
+  .primary,
+  .secondary,
+  .danger,
+  .tab,
+  select,
+  input[type="date"],
+  input[type="number"],
+  input[type="text"],
+  input[type="search"] {
+    touch-action: manipulation;
+  }
+}
+
+@media (max-width: 480px) {
+  .mobile-page-title {
+    display: none;
+  }
+
+  .summary-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .summary-card {
+    min-height: 82px;
+  }
+
+  .vehicle-specs {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .page-head > div:last-child,
+  .page-actions,
+  .header-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .page-head .primary,
+  .page-head .secondary,
+  .page-actions .primary,
+  .page-actions .secondary {
+    width: 100%;
+  }
+
+  .share-link-actions,
+  .selection-bulk-actions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .modal-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .modal-actions > * {
+    width: 100%;
+  }
+}

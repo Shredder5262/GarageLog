@@ -696,17 +696,116 @@ function openDocumentStorage(){
  const close=()=>dialog.close();dialog.querySelector('.storage-close').onclick=close;dialog.querySelector('.storage-done').onclick=close;dialog.querySelector('.storage-index')?.addEventListener('click',()=>{dialog.close();openOcrStatus()});dialog.querySelector('.storage-export')?.addEventListener('click',()=>{dialog.close();openDocumentSelection('export')});dialog.showModal()
 }
 
-function makeShareToken(){return(globalThis.crypto?.randomUUID?.()||`${Date.now()}-${Math.random()}`).replaceAll('-','')+Math.random().toString(36).slice(2,10)}
+function makeShareToken(){
+ const bytes=new Uint8Array(24);
+ globalThis.crypto.getRandomValues(bytes);
+ return Array.from(bytes,byte=>byte.toString(16).padStart(2,'0')).join('')
+}
+async function copyTextToClipboard(value){
+ if(navigator.clipboard?.writeText){
+  try{await navigator.clipboard.writeText(value);return true}catch{}
+ }
+ const field=document.createElement('textarea');
+ field.value=value;
+ field.setAttribute('readonly','');
+ field.style.position='fixed';
+ field.style.left='-9999px';
+ field.style.top='0';
+ document.body.appendChild(field);
+ field.focus();
+ field.select();
+ field.setSelectionRange(0,field.value.length);
+ let copied=false;
+ try{copied=document.execCommand('copy')}catch{}
+ field.remove();
+ return copied
+}
 window.shareDocument=index=>openDocumentShare(index);
 function openDocumentShare(initialIndex=null){
- const stored=state.documents.map((doc,index)=>({doc,index})).filter(item=>item.doc.storedName);if(!stored.length){toast('Upload a document before creating a share link');return}
- const dialog=ensureDynamicDialog('documentShareDialog','document-share-dialog');let selected=initialIndex!==null&&state.documents[initialIndex]?.storedName?initialIndex:stored[0].index,qrVisible=false;
- const draw=()=>{const doc=state.documents[selected],link=doc.shareToken?`${location.origin}/shared/${doc.shareToken}`:'',qrUrl=link?`/api/qr?text=${encodeURIComponent(link)}`:'';dialog.innerHTML=`<div class="modal-header"><div><span class="wizard-eyebrow">LOCAL SHARING</span><h3>Share Document</h3><p>Create a unique link or QR code from this GarageLog instance.</p></div><button class="icon-btn share-close">${svg('close')}</button></div><div class="share-dialog-body"><label>Document<select class="share-doc-select">${stored.map(item=>`<option value="${item.index}" ${item.index===selected?'selected':''}>${esc(item.doc.name)}</option>`).join('')}</select></label>${link?`<div class="share-link-panel"><label>Share link<input class="share-link-input" value="${esc(link)}" readonly></label><div class="share-link-actions"><button class="secondary copy-share">${svg('share')} Copy Link</button><a class="secondary" href="mailto:?subject=${encodeURIComponent(`GarageLog document: ${doc.name}`)}&body=${encodeURIComponent(link)}">Email Link</a><button class="secondary generate-qr">${svg('qr')} ${qrVisible?'Refresh QR Code':'Generate QR Code'}</button><button class="secondary revoke-share">Revoke</button></div>${qrVisible?`<div class="share-qr-workspace"><div class="share-qr"><img src="${qrUrl}" alt="QR code linking to ${esc(doc.name)}" onerror="this.hidden=true;this.nextElementSibling.hidden=false"><span hidden>QR generation is unavailable. Install the QR utility on the GarageLog host.</span></div><div class="share-qr-copy"><strong>Document QR code</strong><p>Scan this code from a device that can reach this GarageLog address.</p><a class="secondary" href="${qrUrl}" download="garagelog-document-qr.svg">${svg('download')} Download QR SVG</a></div></div>`:`<button class="share-qr-placeholder generate-qr">${svg('qr')}<span><strong>Generate a QR code</strong><small>Useful for labels, folders, or quickly opening this document from another device.</small></span></button>`}</div>`:`<div class="share-create-panel">${fileTypeIcon(doc)}<div><strong>${esc(doc.name)}</strong><p>Create the local share link before generating a QR code.</p></div><button class="primary create-share">${svg('share')} Create Link</button></div>`}<div class="share-privacy-note">The file is not uploaded to a third party. The link and QR code work only where this self-hosted GarageLog instance is reachable.</div></div><div class="modal-actions"><button class="primary share-done">Done</button></div>`;
- dialog.querySelector('.share-close').onclick=()=>dialog.close();dialog.querySelector('.share-done').onclick=()=>dialog.close();dialog.querySelector('.share-doc-select').onchange=e=>{selected=Number(e.target.value);qrVisible=false;draw()};dialog.querySelector('.create-share')?.addEventListener('click',async()=>{doc.shareToken=makeShareToken();doc.shareEnabled=true;qrVisible=false;await saveNow();draw();render()});dialog.querySelector('.revoke-share')?.addEventListener('click',async()=>{doc.shareToken=null;doc.shareEnabled=false;qrVisible=false;await saveNow();draw();render()});dialog.querySelector('.copy-share')?.addEventListener('click',async()=>{try{await navigator.clipboard.writeText(link);toast('Share link copied')}catch{prompt('Copy this share link:',link)}});dialog.querySelectorAll('.generate-qr').forEach(button=>button.addEventListener('click',()=>{qrVisible=true;draw()}))};draw();dialog.showModal()
-}
+ const stored=state.documents.map((doc,index)=>({doc,index})).filter(item=>item.doc.storedName);
+ if(!stored.length){toast('Upload a document before creating a share link');return}
+ const dialog=ensureDynamicDialog('documentShareDialog','document-share-dialog');
+ let selected=initialIndex!==null&&state.documents[initialIndex]?.storedName?initialIndex:stored[0].index,qrVisible=false;
 
+ const commitShareChange=async(doc,mutate,successMessage)=>{
+  const previousToken=doc.shareToken,previousEnabled=doc.shareEnabled;
+  try{
+   mutate();
+   await saveNow();
+   draw();
+   render();
+   toast(successMessage)
+  }catch(error){
+   doc.shareToken=previousToken;
+   doc.shareEnabled=previousEnabled;
+   draw();
+   toast(error?.message||'Unable to update the share link')
+  }
+ };
+
+ const draw=()=>{
+  const doc=state.documents[selected],link=doc.shareToken?`${location.origin}/shared/${doc.shareToken}`:'',qrUrl=link?`/api/qr?text=${encodeURIComponent(link)}&v=${encodeURIComponent(doc.shareToken)}`:'';
+  dialog.innerHTML=`<div class="modal-header"><div><span class="wizard-eyebrow">LOCAL SHARING</span><h3>Share Document</h3><p>Create a unique link or QR code from this GarageLog instance.</p></div><button type="button" class="icon-btn share-close">${svg('close')}</button></div><div class="share-dialog-body"><label>Document<select class="share-doc-select">${stored.map(item=>`<option value="${item.index}" ${item.index===selected?'selected':''}>${esc(item.doc.name)}</option>`).join('')}</select></label>${link?`<div class="share-link-panel"><label>Share link<input class="share-link-input" value="${esc(link)}" readonly></label><div class="share-link-actions"><button type="button" class="secondary copy-share">${svg('share')} Copy Link</button><a class="secondary" href="mailto:?subject=${encodeURIComponent(`GarageLog document: ${doc.name}`)}&body=${encodeURIComponent(link)}">Email Link</a><button type="button" class="secondary generate-qr">${svg('qr')} ${qrVisible?'Refresh QR Code':'Generate QR Code'}</button><button type="button" class="secondary revoke-share">Revoke</button></div>${qrVisible?`<div class="share-qr-workspace"><div class="share-qr"><img src="${qrUrl}" alt="QR code linking to ${esc(doc.name)}" onerror="this.hidden=true;this.nextElementSibling.hidden=false"><span hidden>QR generation is unavailable. Install the QR utility on the GarageLog host.</span></div><div class="share-qr-copy"><strong>Document QR code</strong><p>Scan this code from a device that can reach this GarageLog address.</p><a class="secondary" href="${qrUrl}" download="garagelog-document-qr.svg">${svg('download')} Download QR SVG</a></div></div>`:`<button type="button" class="share-qr-placeholder generate-qr">${svg('qr')}<span><strong>Generate a QR code</strong><small>Useful for labels, folders, or quickly opening this document from another device.</small></span></button>`}</div>`:`<div class="share-create-panel">${fileTypeIcon(doc)}<div><strong>${esc(doc.name)}</strong><p>Create the local share link before generating a QR code.</p></div><button type="button" class="primary create-share">${svg('share')} Create Link</button></div>`}<div class="share-privacy-note">The file is not uploaded to a third party. The link and QR code work only where this self-hosted GarageLog instance is reachable.</div></div><div class="modal-actions"><button type="button" class="primary share-done">Done</button></div>`;
+
+  dialog.querySelector('.share-close').onclick=()=>dialog.close();
+  dialog.querySelector('.share-done').onclick=()=>dialog.close();
+  dialog.querySelector('.share-doc-select').onchange=e=>{selected=Number(e.target.value);qrVisible=false;draw()};
+
+  dialog.querySelector('.create-share')?.addEventListener('click',()=>commitShareChange(
+   doc,
+   ()=>{doc.shareToken=makeShareToken();doc.shareEnabled=true;qrVisible=false},
+   'Share link created'
+  ));
+
+  dialog.querySelector('.revoke-share')?.addEventListener('click',()=>commitShareChange(
+   doc,
+   ()=>{doc.shareToken=null;doc.shareEnabled=false;qrVisible=false},
+   'Share link revoked'
+  ));
+
+  dialog.querySelector('.copy-share')?.addEventListener('click',async()=>{
+   const copied=await copyTextToClipboard(link);
+   toast(copied?'Share link copied':'Unable to copy the share link')
+  });
+
+  dialog.querySelectorAll('.generate-qr').forEach(button=>button.addEventListener('click',async()=>{
+   if(!qrVisible){
+    qrVisible=true;
+    draw();
+    toast('QR code generated');
+    return
+   }
+   await commitShareChange(
+    doc,
+    ()=>{doc.shareToken=makeShareToken();doc.shareEnabled=true;qrVisible=true},
+    'QR code refreshed; share link updated'
+   )
+  }))
+ };
+
+ draw();
+ dialog.showModal()
+}
 window.openDocumentShare=openDocumentShare;
-function openDocumentSelection(mode){const stored=state.documents.map((doc,index)=>({doc,index})).filter(item=>item.doc.storedName);if(!stored.length){toast('No stored documents are available');return}const dialog=ensureDynamicDialog('documentSelectionDialog','document-selection-dialog'),title=mode==='export'?'Export Documents as ZIP':'Print Documents';dialog.innerHTML=`<form><div class="modal-header"><div><h3>${title}</h3><p>${mode==='export'?'Choose files for one ZIP archive.':'Choose files for a printer-friendly queue.'}</p></div><button type="button" class="icon-btn selection-close">${svg('close')}</button></div><div class="document-selection-list">${stored.map(item=>`<label><input type="checkbox" name="documentIndex" value="${item.index}" checked>${fileTypeIcon(item.doc,true)}<span><strong>${esc(item.doc.name)}</strong><small>${esc(item.doc.category)} · ${esc(item.doc.size||'')}</small></span></label>`).join('')}</div><div class="modal-actions"><button type="button" class="secondary selection-cancel">Cancel</button><button type="submit" class="primary">${mode==='export'?'Export ZIP':'Build Print Queue'}</button></div></form>`;dialog.querySelector('.selection-close').onclick=()=>dialog.close();dialog.querySelector('.selection-cancel').onclick=()=>dialog.close();dialog.querySelector('form').onsubmit=async e=>{e.preventDefault();const indexes=new FormData(e.currentTarget).getAll('documentIndex').map(Number);if(!indexes.length){toast('Select at least one document');return}if(mode==='export')await exportSelectedDocuments(indexes);else openPrintQueue(indexes);dialog.close()};dialog.showModal()}
+function openDocumentSelection(mode){
+ const stored=state.documents.map((doc,index)=>({doc,index})).filter(item=>item.doc.storedName);
+ if(!stored.length){toast('No stored documents are available');return}
+ const dialog=ensureDynamicDialog('documentSelectionDialog','document-selection-dialog'),title=mode==='export'?'Export Documents as ZIP':'Print Documents';
+ dialog.innerHTML=`<form><div class="modal-header"><div><h3>${title}</h3><p>${mode==='export'?'Choose files for one ZIP archive.':'Choose files for a printer-friendly queue.'}</p></div><button type="button" class="icon-btn selection-close">${svg('close')}</button></div><div class="document-selection-list">${stored.map(item=>`<label><input type="checkbox" name="documentIndex" value="${item.index}">${fileTypeIcon(item.doc,true)}<span><strong>${esc(item.doc.name)}</strong><small>${esc(item.doc.category)} - ${esc(item.doc.size||'')}</small></span></label>`).join('')}</div><div class="modal-actions"><div class="selection-bulk-actions"><button type="button" class="secondary selection-all">Select All</button><button type="button" class="secondary selection-none">Unselect All</button></div><button type="button" class="secondary selection-cancel">Cancel</button><button type="submit" class="primary">${mode==='export'?'Export ZIP':'Build Print Queue'}</button></div></form>`;
+ dialog.querySelector('.selection-close').onclick=()=>dialog.close();
+ dialog.querySelector('.selection-cancel').onclick=()=>dialog.close();
+ const checkboxes=[...dialog.querySelectorAll('input[name="documentIndex"]')];
+ dialog.querySelector('.selection-all').onclick=()=>{checkboxes.forEach(input=>input.checked=true);toast('All documents selected')};
+ dialog.querySelector('.selection-none').onclick=()=>{checkboxes.forEach(input=>input.checked=false);toast('All documents unselected')};
+ dialog.querySelector('form').onsubmit=async e=>{
+  e.preventDefault();
+  const indexes=new FormData(e.currentTarget).getAll('documentIndex').map(Number);
+  if(!indexes.length){toast('Select at least one document');return}
+  if(mode==='export')await exportSelectedDocuments(indexes);else openPrintQueue(indexes);
+  dialog.close()
+ };
+ dialog.showModal()
+}
 window.openDocumentSelection=openDocumentSelection;
 async function exportSelectedDocuments(indexes){const docs=indexes.map(index=>state.documents[index]).filter(doc=>doc?.storedName),fileNames=Object.fromEntries(docs.map(doc=>[doc.storedName,doc.name]));const response=await fetch('/api/documents/export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({storedNames:docs.map(doc=>doc.storedName),fileNames})});if(!response.ok){const data=await response.json().catch(()=>({}));toast(data.error||'Unable to export documents');return}const url=URL.createObjectURL(await response.blob()),link=document.createElement('a');link.href=url;link.download=`garagelog-documents-${new Date().toISOString().slice(0,10)}.zip`;link.click();setTimeout(()=>URL.revokeObjectURL(url),1500);toast(`Exported ${docs.length} documents`)}
 function openPrintQueue(indexes){const docs=indexes.map(index=>state.documents[index]).filter(doc=>doc?.storedName),popup=openCenteredWindow('','garageLogDocumentPrintQueue',960,760);if(!popup){toast('Allow pop-ups to open the print queue');return}popup.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>GarageLog Document Print Queue</title><link rel="icon" type="image/png" href="${APP_FAVICON_PATH}"><style>*{box-sizing:border-box}body{font-family:Segoe UI,Arial;margin:0;color:#172033;background:#f4f7fb}.shell{max-width:900px;margin:28px auto;background:white;border:1px solid #dbe3ee;border-radius:14px;overflow:hidden;box-shadow:0 18px 44px rgba(15,23,42,.12)}header{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;padding:24px 28px;border-bottom:1px solid #dbe3ee}h1{font-size:23px;margin:0 0 5px}p{margin:0;color:#64748b}.close{border:1px solid #cfd7e3;background:white;border-radius:8px;padding:8px 12px;cursor:pointer}.list{padding:4px 28px 24px}article{display:flex;justify-content:space-between;align-items:center;gap:20px;border-bottom:1px solid #e5eaf1;padding:16px 0}article:last-child{border-bottom:0}a{background:#2563eb;color:#fff;padding:9px 14px;border-radius:8px;text-decoration:none;white-space:nowrap}small{display:block;color:#64748b;margin-top:4px}.note{margin:18px 28px 0;padding:12px 14px;border-radius:9px;background:#eff6ff;color:#334155;font-size:13px}</style></head><body><main class="shell"><header><div><h1>Document Print Queue</h1><p>Review the selected files, then open and print each document when ready.</p></div><button class="close" onclick="window.close()">Close</button></header><div class="note">GarageLog will not open the browser print dialog automatically.</div><section class="list">${docs.map(doc=>`<article><div><strong>${esc(doc.name)}</strong><small>${esc(doc.category)} · ${esc(doc.size||'')}</small></div><a href="/api/documents/${encodeURIComponent(doc.storedName)}/preview" target="_blank">Open Document</a></article>`).join('')}</section></main></body></html>`);popup.document.close()}
@@ -2088,7 +2187,7 @@ function openInfoModal(kind){
    body.innerHTML=`<div class="profile-info-card"><span class="profile-info-avatar">L</span><div><strong>Local User</strong><small>Private, self-hosted account</small></div></div><dl class="profile-detail-list"><div><dt>Storage mode</dt><dd>Local GarageLog instance</dd></div><div><dt>Active vehicle</dt><dd>${esc(vehicleFullName())}</dd></div><div><dt>Vehicles</dt><dd>${state.vehicles.length}</dd></div><div><dt>Data sharing</dt><dd>External sharing disabled</dd></div></dl>`;
  }else if(kind==='about'){
    title.textContent='Help & About';subtitle.textContent='GarageLog local-first vehicle records.';
-   body.innerHTML=`<div class="about-logo">${svg('shield')}<div><strong>GarageLog 0.7.7</strong><small>Local-first self-hosted release</small></div></div><div class="info-section"><h4>About</h4><p>GarageLog keeps vehicle, maintenance, expense, reminder, and document records on your own instance.</p></div><div class="info-section"><h4>Help</h4><p>Use Garage for vehicle details, Maintenance for service intervals, Documents for local files, and Reminders for date- or mileage-based rules.</p></div><div class="info-callout">GarageLog authentication is local to this self-hosted instance. Account records and vehicle data remain in the GarageLog data folder.</div>`;
+   body.innerHTML=`<div class="about-logo">${svg('shield')}<div><strong>GarageLog 0.7.8</strong><small>Local-first self-hosted release</small></div></div><div class="info-section"><h4>About</h4><p>GarageLog keeps vehicle, maintenance, expense, reminder, and document records on your own instance.</p></div><div class="info-section"><h4>Help</h4><p>Use Garage for vehicle details, Maintenance for service intervals, Documents for local files, and Reminders for date- or mileage-based rules.</p></div><div class="info-callout">GarageLog authentication is local to this self-hosted instance. Account records and vehicle data remain in the GarageLog data folder.</div>`;
  }else{
    title.textContent='Log out';subtitle.textContent='End this local browser session.';
    body.innerHTML=`<div class="logout-warning">${svg('logout')}<div><strong>Log out of GarageLog?</strong><p>Your local records will remain saved. This only closes the current interface session.</p></div></div>`;
