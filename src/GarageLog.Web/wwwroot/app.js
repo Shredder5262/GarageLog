@@ -43,6 +43,15 @@ const nav=document.getElementById('nav');
 const content=document.getElementById('content');
 const SIDEBAR_LOGO_PATH='/assets/garagelog-logo.png';
 const APP_FAVICON_PATH='/assets/favicon-32x32.png';
+const NAV_ICON_PATHS={
+ Dashboard:'/assets/navigation/dashboard.png',
+ Garage:'/assets/navigation/garage.png',
+ Maintenance:'/assets/navigation/maintenance.png',
+ Expenses:'/assets/navigation/expenses.png',
+ Documents:'/assets/navigation/documents.png',
+ Reminders:'/assets/navigation/reminders.png',
+ Reports:'/assets/navigation/reports.png'
+};
 const MAINTENANCE_WARNING_PERCENT=25;
 const MAINTENANCE_DANGER_PERCENT=10;
 const nativeGarageLogFetch=window.fetch.bind(window);
@@ -125,6 +134,7 @@ const ICONS={
  chevronRight:'<path d="m9 18 6-6-6-6"/>'
 };
 function svg(name,cls=''){return `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]||ICONS.file}</svg>`}
+function navIcon(name){const src=NAV_ICON_PATHS[name];return src?`<img class="nav-menu-icon" src="${src}" alt="" aria-hidden="true">`:svg('file')}
 function esc(v=''){return String(v).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]))}
 function money(n){return Number(n||0).toLocaleString('en-US',{style:'currency',currency:'USD'})}
 function number(n){return Number(n||0).toLocaleString('en-US')}
@@ -732,7 +742,7 @@ window.useDocumentSearch=function(value){
 async function saveNow(){if(!canWrite())throw new Error('This account has read-only access.');persistActiveVehicle();const r=await fetch('/api/state',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(state)});if(r.status===401){authSession={configured:true,authenticated:false};renderAuthScreen('login','Your session expired. Sign in again.');throw new Error('Session expired')}if(!r.ok){const d=await r.json().catch(()=>({}));throw new Error(d.error||`Unable to save (${r.status})`)}}
 function save(message='Saved locally'){clearTimeout(saveTimer);saveTimer=setTimeout(()=>saveNow().then(()=>toast(message)).catch(e=>{console.error(e);toast('Save failed')}),120)}
 
-function renderNav(){nav.innerHTML=navItems.map(x=>`<button class="nav-btn ${x===current?'active':''}" data-page="${x}">${svg(({Dashboard:'dashboard',Garage:'car',Maintenance:'wrench',Expenses:'dollar',Documents:'file',Reminders:'bell',Reports:'chart'})[x])}<span>${x}</span></button>`).join('');nav.querySelectorAll('[data-page]').forEach(b=>b.onclick=()=>{current=b.dataset.page;currentFilter='All';render()})}
+function renderNav(){nav.innerHTML=navItems.map(x=>`<button class="nav-btn ${x===current?'active':''}" data-page="${x}">${navIcon(x)}<span>${x}</span></button>`).join('');nav.querySelectorAll('[data-page]').forEach(b=>b.onclick=()=>{current=b.dataset.page;currentFilter='All';render()})}
 function pageHead(title,desc,action=''){return `<div class="page-head"><div><h1>${title}</h1><p>${desc}</p></div>${action}</div>`}
 function primary(label,action,icon='plus'){return `<button class="primary" onclick="${action}">${svg(icon)}${label}</button>`}
 function summaryCard(label,value,sub='',icon='gauge',tone='blue',change=''){return `<div class="card summary-card"><div class="summary-icon ${tone}">${svg(icon)}</div><div><div class="muted">${label}</div><div class="metric">${value}</div><div class="muted">${sub}</div>${change?`<div class="kpi-change">${change}</div>`:''}</div></div>`}
@@ -2078,7 +2088,7 @@ function openInfoModal(kind){
    body.innerHTML=`<div class="profile-info-card"><span class="profile-info-avatar">L</span><div><strong>Local User</strong><small>Private, self-hosted account</small></div></div><dl class="profile-detail-list"><div><dt>Storage mode</dt><dd>Local GarageLog instance</dd></div><div><dt>Active vehicle</dt><dd>${esc(vehicleFullName())}</dd></div><div><dt>Vehicles</dt><dd>${state.vehicles.length}</dd></div><div><dt>Data sharing</dt><dd>External sharing disabled</dd></div></dl>`;
  }else if(kind==='about'){
    title.textContent='Help & About';subtitle.textContent='GarageLog local-first vehicle records.';
-   body.innerHTML=`<div class="about-logo">${svg('shield')}<div><strong>GarageLog 0.7.6</strong><small>Local-first self-hosted release</small></div></div><div class="info-section"><h4>About</h4><p>GarageLog keeps vehicle, maintenance, expense, reminder, and document records on your own instance.</p></div><div class="info-section"><h4>Help</h4><p>Use Garage for vehicle details, Maintenance for service intervals, Documents for local files, and Reminders for date- or mileage-based rules.</p></div><div class="info-callout">GarageLog authentication is local to this self-hosted instance. Account records and vehicle data remain in the GarageLog data folder.</div>`;
+   body.innerHTML=`<div class="about-logo">${svg('shield')}<div><strong>GarageLog 0.7.7</strong><small>Local-first self-hosted release</small></div></div><div class="info-section"><h4>About</h4><p>GarageLog keeps vehicle, maintenance, expense, reminder, and document records on your own instance.</p></div><div class="info-section"><h4>Help</h4><p>Use Garage for vehicle details, Maintenance for service intervals, Documents for local files, and Reminders for date- or mileage-based rules.</p></div><div class="info-callout">GarageLog authentication is local to this self-hosted instance. Account records and vehicle data remain in the GarageLog data folder.</div>`;
  }else{
    title.textContent='Log out';subtitle.textContent='End this local browser session.';
    body.innerHTML=`<div class="logout-warning">${svg('logout')}<div><strong>Log out of GarageLog?</strong><p>Your local records will remain saved. This only closes the current interface session.</p></div></div>`;

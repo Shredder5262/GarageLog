@@ -2380,3 +2380,30 @@
 
 /* 0.7.6 - Contextual document metadata */
 .document-context-field[hidden],.document-linked-expense[hidden]{display:none!important}
+/* GarageLog 0.7.7 - illustrated sidebar navigation icons */
+.nav-btn{
+  min-height:48px;
+  padding:7px 12px;
+  gap:12px;
+}
+.nav-menu-icon{
+  display:block;
+  width:30px;
+  height:30px;
+  flex:0 0 30px;
+  object-fit:contain;
+  filter:drop-shadow(0 1px 1px rgb(15 23 42 / .16));
+  transition:transform .15s ease,filter .15s ease;
+}
+.nav-btn:hover .nav-menu-icon{
+  transform:translateY(-1px) scale(1.04);
+  filter:drop-shadow(0 2px 2px rgb(15 23 42 / .2));
+}
+.nav-btn.active .nav-menu-icon{
+  transform:scale(1.05);
+}
+@media(max-height:760px){
+  .sidebar nav{gap:3px}
+  .nav-btn{min-height:43px;padding:5px 11px}
+  .nav-menu-icon{width:27px;height:27px;flex-basis:27px}
+}
