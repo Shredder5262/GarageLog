@@ -21,7 +21,7 @@ using Microsoft.AspNetCore.Identity;
 using UglyToad.PdfPig;
 using UglyToad.PdfPig.DocumentLayoutAnalysis.TextExtractor;
 
-const string GarageLogVersion = "0.7.9";
+const string GarageLogVersion = "0.7.10";
 var builder = WebApplication.CreateBuilder(args);
 
 builder.WebHost.UseUrls(
@@ -849,7 +849,9 @@ app.MapGet("/api/document-shares", async (HttpContext context) =>
     var visible = new List<DocumentShareLinkDto>();
     foreach (var link in links)
     {
-        if (CanViewAllVehicles(user) || await CanAccessDocumentAsync(connectionString, user, link.StoredName))
+        if (CanViewAllVehicles(user)
+            || string.Equals(link.CreatedByUserId, user.Id, StringComparison.Ordinal)
+            || await CanAccessDocumentAsync(connectionString, user, link.StoredName))
             visible.Add(ToDocumentShareDto(link));
     }
 
@@ -860,8 +862,13 @@ app.MapPost("/api/document-shares", async (DocumentShareCreateRequest request, H
 {
     var user = CurrentUser(context);
     if (user is null) return Results.Unauthorized();
-    if (!IsSupportedShareExpiration(request.ExpiresInDays))
-        return Results.BadRequest(new { error = "Share expiration must be Never, 1 day, 7 days, or 30 days." });
+
+    if (!TryResolveDocumentShareExpiration(
+        request.ExpiresInDays,
+        request.ExpiresAtUtc,
+        out var expiresUtc,
+        out var expirationError))
+        return Results.BadRequest(new { error = expirationError });
 
     var safeName = Path.GetFileName(request.StoredName ?? string.Empty);
     if (string.IsNullOrWhiteSpace(safeName))
@@ -877,9 +884,6 @@ app.MapPost("/api/document-shares", async (DocumentShareCreateRequest request, H
     if (existing is not null)
         return Results.Ok(new { share = ToDocumentShareDto(existing), created = false });
 
-    var expiresUtc = request.ExpiresInDays.HasValue
-        ? DateTimeOffset.UtcNow.AddDays(request.ExpiresInDays.Value)
-        : (DateTimeOffset?)null;
     var created = await CreateDocumentShareAsync(
         connectionString,
         safeName,
@@ -919,6 +923,7 @@ app.MapPost("/api/document-shares/{token}/revoke", async (string token, HttpCont
     if (existing is null)
         return Results.NotFound(new { error = "The share link was not found." });
     if (!CanViewAllVehicles(user)
+        && !string.Equals(existing.CreatedByUserId, user.Id, StringComparison.Ordinal)
         && !await CanAccessDocumentAsync(connectionString, user, existing.StoredName))
         return Results.NotFound(new { error = "The selected document is unavailable." });
 
@@ -926,22 +931,40 @@ app.MapPost("/api/document-shares/{token}/revoke", async (string token, HttpCont
     return Results.Ok(new { revoked = true });
 });
 
+app.MapDelete("/api/document-shares/{token}", async (string token, HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    if (user is null) return Results.Unauthorized();
+
+    var existing = await GetDocumentShareAsync(connectionString, token);
+    if (existing is null)
+        return Results.NotFound(new { error = "The share-link entry was not found." });
+    if (!CanViewAllVehicles(user)
+        && !string.Equals(existing.CreatedByUserId, user.Id, StringComparison.Ordinal)
+        && !await CanAccessDocumentAsync(connectionString, user, existing.StoredName))
+        return Results.NotFound(new { error = "The selected share-link entry is unavailable." });
+
+    await DeleteDocumentShareAsync(connectionString, token);
+    return Results.Ok(new { deleted = true });
+});
+
 app.MapPut("/api/document-shares/{token}/expiration", async (string token, DocumentShareExpirationRequest request, HttpContext context) =>
 {
     var user = CurrentUser(context);
     if (user is null) return Results.Unauthorized();
-    if (!IsSupportedShareExpiration(request.ExpiresInDays))
-        return Results.BadRequest(new { error = "Share expiration must be Never, 1 day, 7 days, or 30 days." });
+
+    if (!TryResolveDocumentShareExpiration(
+        request.ExpiresInDays,
+        request.ExpiresAtUtc,
+        out var expiresUtc,
+        out var expirationError))
+        return Results.BadRequest(new { error = expirationError });
 
     var existing = await GetDocumentShareAsync(connectionString, token);
     if (existing is null || existing.Status != "Active")
         return Results.NotFound(new { error = "The active share link was not found." });
     if (!await CanAccessDocumentAsync(connectionString, user, existing.StoredName))
         return Results.NotFound(new { error = "The selected document is unavailable." });
-
-    var expiresUtc = request.ExpiresInDays.HasValue
-        ? DateTimeOffset.UtcNow.AddDays(request.ExpiresInDays.Value)
-        : (DateTimeOffset?)null;
 
     await UpdateDocumentShareExpirationAsync(connectionString, token, expiresUtc);
     var updated = await GetDocumentShareAsync(connectionString, token);
@@ -958,6 +981,7 @@ app.MapPost("/api/document-shares/revoke-all", async (HttpContext context) =>
     foreach (var link in links.Where(link => link.Status == "Active"))
     {
         if (!CanViewAllVehicles(user)
+            && !string.Equals(link.CreatedByUserId, user.Id, StringComparison.Ordinal)
             && !await CanAccessDocumentAsync(connectionString, user, link.StoredName))
             continue;
 
@@ -1127,8 +1151,45 @@ static async Task WriteStateAsync(string connectionString, string json)
 }
 
 
-static bool IsSupportedShareExpiration(int? days) => days is null or 1 or 7 or 30;
+static bool TryResolveDocumentShareExpiration(
+    int? expiresInDays,
+    DateTimeOffset? expiresAtUtc,
+    out DateTimeOffset? resolvedUtc,
+    out string? error)
+{
+    resolvedUtc = null;
+    error = null;
 
+    if (expiresInDays.HasValue && expiresAtUtc.HasValue)
+    {
+        error = "Choose either a preset expiration or a custom expiration, not both.";
+        return false;
+    }
+
+    if (expiresInDays.HasValue && expiresInDays.Value is not (1 or 7 or 30 or 365))
+    {
+        error = "Share expiration must be Never, 1 day, 7 days, 30 days, 1 year, or a custom date/time.";
+        return false;
+    }
+
+    if (expiresAtUtc.HasValue)
+    {
+        var customUtc = expiresAtUtc.Value.ToUniversalTime();
+        if (customUtc <= DateTimeOffset.UtcNow.AddMinutes(1))
+        {
+            error = "Custom expiration must be at least one minute in the future.";
+            return false;
+        }
+
+        resolvedUtc = customUtc;
+        return true;
+    }
+
+    if (expiresInDays.HasValue)
+        resolvedUtc = DateTimeOffset.UtcNow.AddDays(expiresInDays.Value);
+
+    return true;
+}
 static string NewDocumentShareToken() =>
     Convert.ToHexString(RandomNumberGenerator.GetBytes(24)).ToLowerInvariant();
 
@@ -1381,6 +1442,15 @@ static async Task RevokeDocumentSharesAsync(string connectionString, string stor
     await command.ExecuteNonQueryAsync();
 }
 
+static async Task DeleteDocumentShareAsync(string connectionString, string token)
+{
+    await using var connection = new SqliteConnection(connectionString);
+    await connection.OpenAsync();
+    await using var command = connection.CreateCommand();
+    command.CommandText = "DELETE FROM DocumentShareLinks WHERE Token = $token;";
+    command.Parameters.AddWithValue("$token", token);
+    await command.ExecuteNonQueryAsync();
+}
 static async Task UpdateDocumentShareExpirationAsync(
     string connectionString,
     string token,
@@ -1951,8 +2021,13 @@ sealed record UpdateStatusPayload(
     DateTimeOffset CheckedAtUtc,
     string? Error);
 sealed record UpdateCacheEntry(DateTimeOffset ExpiresUtc, UpdateStatusPayload Payload);
-sealed record DocumentShareCreateRequest(string? StoredName, int? ExpiresInDays);
-sealed record DocumentShareExpirationRequest(int? ExpiresInDays);
+sealed record DocumentShareCreateRequest(
+    string? StoredName,
+    int? ExpiresInDays,
+    DateTimeOffset? ExpiresAtUtc);
+sealed record DocumentShareExpirationRequest(
+    int? ExpiresInDays,
+    DateTimeOffset? ExpiresAtUtc);
 sealed record DocumentShareLinkDto(
     string Token,
     string StoredName,
