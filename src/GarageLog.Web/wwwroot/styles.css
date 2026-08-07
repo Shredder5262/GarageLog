@@ -2538,3 +2538,77 @@
     margin-left:0;
   }
 }
+/* GarageLog 0.7.9 - share security manager and contextual vehicle onboarding */
+.share-loading-panel{display:grid;grid-template-columns:34px minmax(0,1fr);gap:12px;align-items:center;padding:16px;border:1px solid #bfdbfe;border-radius:13px;background:#eff6ff;color:#1e40af}
+.share-loading-panel svg{width:20px;height:20px}.share-loading-panel strong,.share-loading-panel p{display:block;margin:0}.share-loading-panel p{margin-top:3px;color:#64748b;font-size:12px}
+.share-link-status-row{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px}.share-link-status-row small{color:#64748b}
+.share-status-pill{display:inline-flex;align-items:center;justify-content:center;border-radius:999px;padding:5px 9px;font-size:10px;font-weight:750;text-transform:uppercase;letter-spacing:.04em}
+.share-status-pill.active{background:#dcfce7;color:#15803d}.share-status-pill.expired{background:#fef3c7;color:#b45309}.share-status-pill.revoked{background:#fee2e2;color:#b91c1c}
+.share-expiry-create{display:grid!important;gap:5px!important;margin-top:10px!important;max-width:180px}.share-expiry-create select{width:100%}
+.document-share-dialog .modal-actions .manage-shares{margin-right:auto}
+
+.document-share-manager-dialog{width:min(1040px,96vw);max-height:92vh;overflow:hidden;padding:0}
+.document-share-manager-dialog .share-manager-body{display:grid;gap:14px;max-height:calc(92vh - 150px);overflow:auto;padding:18px 20px;background:#f8fafc}
+.share-manager-summary{display:grid;grid-template-columns:repeat(3,minmax(100px,1fr)) auto;gap:10px;align-items:stretch}
+.share-manager-summary>div{display:grid;gap:2px;padding:12px 14px;border:1px solid var(--border);border-radius:12px;background:#fff}
+.share-manager-summary strong{font-size:22px;color:#0f172a}.share-manager-summary span{font-size:11px;color:#64748b}
+.share-manager-summary .revoke-all-shares{align-self:stretch;justify-content:center;min-width:150px}
+.share-manager-list{display:grid;gap:11px}
+.share-manager-row{display:grid;gap:13px;padding:15px;border:1px solid var(--border);border-radius:14px;background:#fff;box-shadow:0 1px 2px rgba(15,23,42,.03)}
+.share-manager-row.active{border-left:4px solid #22c55e}.share-manager-row.expired{border-left:4px solid #f59e0b}.share-manager-row.revoked{border-left:4px solid #ef4444;opacity:.82}
+.share-manager-document{display:grid;grid-template-columns:38px minmax(0,1fr) auto;gap:11px;align-items:center}
+.share-manager-document>div strong,.share-manager-document>div small{display:block}.share-manager-document>div small{margin-top:2px;color:#64748b;font-size:11px}
+.share-manager-meta{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin:0}
+.share-manager-meta>div{min-width:0}.share-manager-meta dt{font-size:9px;text-transform:uppercase;letter-spacing:.05em;color:#94a3b8;font-weight:700}
+.share-manager-meta dd{margin:3px 0 0;color:#334155;font-size:11px;overflow-wrap:anywhere}
+.share-manager-actions{display:flex;align-items:end;gap:8px;flex-wrap:wrap;padding-top:11px;border-top:1px solid #eef2f7}
+.share-manager-actions button{min-height:36px}.share-manager-actions .danger-outline{margin-left:auto}
+.share-expiration-update{display:grid;gap:4px;margin-left:auto}.share-expiration-update span{font-size:9px;color:#64748b;text-transform:uppercase;font-weight:700;letter-spacing:.04em}
+.share-expiration-update select{min-width:150px;height:36px;border:1px solid var(--border);border-radius:9px;background:#fff;padding:0 8px}
+.share-manager-history-note{padding-top:10px;border-top:1px solid #eef2f7;color:#64748b;font-size:11px}
+.share-manager-empty{display:grid;justify-items:center;gap:7px;padding:35px;border:1px dashed #cbd5e1;border-radius:14px;background:#fff;text-align:center}
+.share-manager-empty>span{width:42px;height:42px;border-radius:12px;display:grid;place-items:center;background:#eff6ff;color:#2563eb}
+.share-manager-empty svg{width:20px;height:20px}.share-manager-empty p{margin:0;color:#64748b;font-size:12px}
+.share-manager-security-note{display:flex;gap:9px;align-items:flex-start;padding:11px 13px;border-radius:11px;background:#eff6ff;color:#1e40af;font-size:11px;line-height:1.45}
+.share-manager-security-note svg{width:17px;height:17px;flex:0 0 17px}
+.document-share-manager-dialog .modal-actions{background:#fff;border-top:1px solid var(--border)}
+
+.vehicle-add-dialog{width:min(980px,96vw);max-width:none;max-height:92vh;overflow:hidden;padding:0}
+.vehicle-add-dialog #modalForm{display:grid;grid-template-rows:auto minmax(0,1fr) auto;max-height:92vh}
+.vehicle-add-dialog .modal-fields{display:block;max-height:none;overflow:auto;min-height:0;padding:18px 22px 22px;background:#f8fafc}
+.vehicle-add-workspace{display:grid;gap:15px}
+.vehicle-add-section{display:grid;gap:14px;padding:16px;border:1px solid var(--border);border-radius:14px;background:#fff;box-shadow:0 1px 2px rgba(15,23,42,.02)}
+.vehicle-add-section-head h4{margin:4px 0 4px;font-size:16px}.vehicle-add-section-head p{margin:0;color:#64748b;font-size:12px;line-height:1.45}
+.vehicle-add-type-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px}
+.vehicle-add-type-card{position:relative;display:grid!important;grid-template-columns:38px minmax(0,1fr) 20px;align-items:center;gap:10px!important;padding:12px!important;border:1px solid var(--border);border-radius:12px;background:#fff;cursor:pointer;font-weight:400!important}
+.vehicle-add-type-card:hover{border-color:#93c5fd;background:#fbfdff}.vehicle-add-type-card:has(input:checked){border-color:#60a5fa;background:#eff6ff;box-shadow:inset 3px 0 #2563eb}
+.vehicle-add-type-card input{position:absolute;opacity:0;pointer-events:none}
+.vehicle-add-type-card>span:nth-of-type(2) strong,.vehicle-add-type-card>span:nth-of-type(2) small{display:block}
+.vehicle-add-type-card small{margin-top:2px;color:#64748b;font-size:10px;line-height:1.3}
+.vehicle-add-type-card i{display:none;color:#2563eb}.vehicle-add-type-card:has(input:checked) i{display:block}.vehicle-add-type-card i svg{width:17px;height:17px}
+.vehicle-add-type-icon{width:38px;height:38px;border-radius:10px;display:grid;place-items:center;background:#eef2ff;color:#4f46e5}.vehicle-add-type-icon svg{width:19px;height:19px}
+.vehicle-add-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.vehicle-add-grid .vehicle-edit-field.wide-field{grid-column:span 2}.vehicle-add-grid .vehicle-edit-field.powertrain-field{grid-column:span 2}
+.vehicle-add-templates-section>.vehicle-template-picker,.vehicle-add-templates-section #vehicleTemplatePickerHost>.vehicle-template-picker{border-top:0;margin-top:0;padding-top:0}
+.vehicle-add-dialog .modal-actions{background:#fff;box-shadow:0 -8px 22px rgba(15,23,42,.05)}
+
+@media(max-width:900px){
+ .share-manager-summary{grid-template-columns:repeat(3,1fr)}.share-manager-summary .revoke-all-shares{grid-column:1/-1}
+ .share-manager-meta{grid-template-columns:repeat(2,minmax(0,1fr))}
+ .vehicle-add-type-grid{grid-template-columns:1fr 1fr}.vehicle-add-grid{grid-template-columns:1fr 1fr}
+ .vehicle-add-grid .vehicle-edit-field.wide-field,.vehicle-add-grid .vehicle-edit-field.powertrain-field{grid-column:1/-1}
+}
+@media(max-width:760px){
+ .document-share-manager-dialog,.vehicle-add-dialog{width:calc(100vw - 12px);max-height:calc(100dvh - 12px);margin:6px auto}
+ .document-share-manager-dialog .share-manager-body{max-height:calc(100dvh - 150px);padding:14px}
+ .share-manager-summary{grid-template-columns:repeat(3,1fr)}.share-manager-summary .revoke-all-shares{grid-column:1/-1}
+ .share-manager-document{grid-template-columns:38px minmax(0,1fr)}.share-manager-document .share-status-pill{grid-column:2;justify-self:start}
+ .share-manager-meta{grid-template-columns:1fr 1fr}
+ .share-manager-actions{display:grid;grid-template-columns:1fr 1fr}.share-manager-actions>*{width:100%!important;margin-left:0!important}.share-expiration-update{grid-column:1/-1}
+ .vehicle-add-dialog #modalForm{max-height:calc(100dvh - 12px)}.vehicle-add-dialog .modal-fields{padding:14px}.vehicle-add-type-grid{grid-template-columns:1fr 1fr}
+}
+@media(max-width:520px){
+ .share-manager-summary{grid-template-columns:1fr 1fr}.share-manager-summary>div:nth-child(3){grid-column:1/-1}
+ .share-manager-meta,.share-manager-actions,.vehicle-add-type-grid,.vehicle-add-grid{grid-template-columns:1fr}
+ .vehicle-add-grid .vehicle-edit-field.wide-field,.vehicle-add-grid .vehicle-edit-field.powertrain-field{grid-column:1}
+}

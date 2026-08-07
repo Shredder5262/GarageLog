@@ -578,7 +578,7 @@ function estimateDocumentExpiry(doc){
   return expiry
 }
 function documentFolderById(id){return state.documentFolders.find(folder=>folder.id===id)||null}
-function documentAction(action){if(action==='share')return openDocumentShare();if(action==='export')return openDocumentSelection('export');if(action==='print')return openDocumentSelection('print');if(action==='manageStorage')return openDocumentStorage();toast('Document action unavailable')}
+function documentAction(action){if(action==='share')return openDocumentShare();if(action==='shareManager')return openDocumentShareManager();if(action==='export')return openDocumentSelection('export');if(action==='print')return openDocumentSelection('print');if(action==='manageStorage')return openDocumentStorage();toast('Document action unavailable')}
 function documentRowMenu(index,doc){return `<button type="button" class="document-row-menu-trigger" aria-label="Document actions" onclick="openDocumentRowMenu(event,${index})">${svg('more')}</button>`}
 function closeDocumentRowActionMenu(){document.querySelector('.document-row-action-menu')?.remove()}
 window.openDocumentRowMenu=function(event,index){
@@ -696,10 +696,25 @@ function openDocumentStorage(){
  const close=()=>dialog.close();dialog.querySelector('.storage-close').onclick=close;dialog.querySelector('.storage-done').onclick=close;dialog.querySelector('.storage-index')?.addEventListener('click',()=>{dialog.close();openOcrStatus()});dialog.querySelector('.storage-export')?.addEventListener('click',()=>{dialog.close();openDocumentSelection('export')});dialog.showModal()
 }
 
-function makeShareToken(){
- const bytes=new Uint8Array(24);
- globalThis.crypto.getRandomValues(bytes);
- return Array.from(bytes,byte=>byte.toString(16).padStart(2,'0')).join('')
+async function documentShareRequest(url,options={}){
+ return authRequest(url,{cache:'no-store',...options})
+}
+async function listDocumentShares(){
+ const result=await documentShareRequest('/api/document-shares');
+ return Array.isArray(result?.shares)?result.shares:[]
+}
+function documentShareUrl(share){return share?.token?`${location.origin}/shared/${share.token}`:''}
+function documentShareQrUrl(share){const link=documentShareUrl(share);return link?`/api/qr?text=${encodeURIComponent(link)}&v=${encodeURIComponent(share.token)}`:''}
+function activeDocumentShare(shares,storedName){return(shares||[]).find(share=>share.status==='Active'&&share.storedName===storedName)||null}
+function shareExpirationText(share){
+ if(!share?.expiresUtc)return'Never';
+ const date=new Date(share.expiresUtc);
+ return Number.isNaN(date.getTime())?'Never':date.toLocaleString()
+}
+function shareAccessText(share){
+ if(!share?.lastAccessUtc)return'Never opened';
+ const date=new Date(share.lastAccessUtc);
+ return Number.isNaN(date.getTime())?'Never opened':`${date.toLocaleString()} · ${number(share.accessCount||0)} access${Number(share.accessCount||0)===1?'':'es'}`
 }
 async function copyTextToClipboard(value){
  if(navigator.clipboard?.writeText){
@@ -720,48 +735,123 @@ async function copyTextToClipboard(value){
  field.remove();
  return copied
 }
+async function createOrReuseDocumentShare(doc,expiresInDays=null){
+ const result=await documentShareRequest('/api/document-shares',{
+  method:'POST',
+  headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({storedName:doc.storedName,expiresInDays})
+ });
+ return result.share
+}
 window.shareDocument=index=>openDocumentShare(index);
-function openDocumentShare(initialIndex=null){
+async function openDocumentShare(initialIndex=null,options={}){
  const stored=state.documents.map((doc,index)=>({doc,index})).filter(item=>item.doc.storedName);
  if(!stored.length){toast('Upload a document before creating a share link');return}
  const dialog=ensureDynamicDialog('documentShareDialog','document-share-dialog');
- let selected=initialIndex!==null&&state.documents[initialIndex]?.storedName?initialIndex:stored[0].index,qrVisible=false;
+ let shares=[];
+ try{shares=await listDocumentShares()}catch(error){toast(error.message||'Unable to load document shares');return}
+ let selected=initialIndex!==null&&state.documents[initialIndex]?.storedName?initialIndex:stored[0].index;
+ let currentShare=activeDocumentShare(shares,state.documents[selected].storedName);
+ let qrVisible=Boolean(options?.showQr&&currentShare);
+ let busy=false;
 
- const commitShareChange=async(doc,mutate,successMessage)=>{
-  const previousToken=doc.shareToken,previousEnabled=doc.shareEnabled;
+ const updateLocalShare=share=>{
+  shares=shares.filter(item=>item.token!==share.token&&!(item.status==='Active'&&item.storedName===share.storedName));
+  shares.unshift(share);
+  currentShare=share.status==='Active'?share:null
+ };
+
+ const refreshShares=async()=>{
+  shares=await listDocumentShares();
+  currentShare=activeDocumentShare(shares,state.documents[selected].storedName)
+ };
+
+ const ensureSelectedShare=async(expiresInDays=null)=>{
+  const doc=state.documents[selected];
+  const share=await createOrReuseDocumentShare(doc,expiresInDays);
+  updateLocalShare(share);
+  return share
+ };
+
+ const selectDocument=async nextIndex=>{
+  if(busy)return;
+  selected=nextIndex;
+  qrVisible=true;
+  busy=true;
+  draw({loading:true});
   try{
-   mutate();
-   await saveNow();
+   await refreshShares();
+   if(!currentShare)await ensureSelectedShare(null);
    draw();
-   render();
-   toast(successMessage)
+   toast(`Share link and QR code updated for ${state.documents[selected].name||'selected document'}`)
   }catch(error){
-   doc.shareToken=previousToken;
-   doc.shareEnabled=previousEnabled;
+   currentShare=null;
+   qrVisible=false;
    draw();
-   toast(error?.message||'Unable to update the share link')
+   toast(error.message||'Unable to update the selected document share')
+  }finally{
+   busy=false
   }
  };
 
- const draw=()=>{
-  const doc=state.documents[selected],link=doc.shareToken?`${location.origin}/shared/${doc.shareToken}`:'',qrUrl=link?`/api/qr?text=${encodeURIComponent(link)}&v=${encodeURIComponent(doc.shareToken)}`:'';
-  dialog.innerHTML=`<div class="modal-header"><div><span class="wizard-eyebrow">LOCAL SHARING</span><h3>Share Document</h3><p>Create a unique link or QR code from this GarageLog instance.</p></div><button type="button" class="icon-btn share-close">${svg('close')}</button></div><div class="share-dialog-body"><label>Document<select class="share-doc-select">${stored.map(item=>`<option value="${item.index}" ${item.index===selected?'selected':''}>${esc(item.doc.name)}</option>`).join('')}</select></label>${link?`<div class="share-link-panel"><label>Share link<input class="share-link-input" value="${esc(link)}" readonly></label><div class="share-link-actions"><button type="button" class="secondary copy-share">${svg('share')} Copy Link</button><a class="secondary" href="mailto:?subject=${encodeURIComponent(`GarageLog document: ${doc.name}`)}&body=${encodeURIComponent(link)}">Email Link</a><button type="button" class="secondary generate-qr">${svg('qr')} ${qrVisible?'Refresh QR Code':'Generate QR Code'}</button><button type="button" class="secondary revoke-share">Revoke</button></div>${qrVisible?`<div class="share-qr-workspace"><div class="share-qr"><img src="${qrUrl}" alt="QR code linking to ${esc(doc.name)}" onerror="this.hidden=true;this.nextElementSibling.hidden=false"><span hidden>QR generation is unavailable. Install the QR utility on the GarageLog host.</span></div><div class="share-qr-copy"><strong>Document QR code</strong><p>Scan this code from a device that can reach this GarageLog address.</p><a class="secondary" href="${qrUrl}" download="garagelog-document-qr.svg">${svg('download')} Download QR SVG</a></div></div>`:`<button type="button" class="share-qr-placeholder generate-qr">${svg('qr')}<span><strong>Generate a QR code</strong><small>Useful for labels, folders, or quickly opening this document from another device.</small></span></button>`}</div>`:`<div class="share-create-panel">${fileTypeIcon(doc)}<div><strong>${esc(doc.name)}</strong><p>Create the local share link before generating a QR code.</p></div><button type="button" class="primary create-share">${svg('share')} Create Link</button></div>`}<div class="share-privacy-note">The file is not uploaded to a third party. The link and QR code work only where this self-hosted GarageLog instance is reachable.</div></div><div class="modal-actions"><button type="button" class="primary share-done">Done</button></div>`;
+ const draw=({loading=false}={})=>{
+  const doc=state.documents[selected];
+  const link=documentShareUrl(currentShare);
+  const qrUrl=documentShareQrUrl(currentShare);
+  const documentOptions=stored.map(item=>`<option value="${item.index}" ${item.index===selected?'selected':''}>${esc(item.doc.name)}</option>`).join('');
+  let shareWorkspace='';
+
+  if(loading){
+   shareWorkspace=`<div class="share-loading-panel">${svg('clock')}<div><strong>Updating document share</strong><p>Creating or loading the selected document's active link and QR code.</p></div></div>`
+  }else if(currentShare){
+   const qrWorkspace=qrVisible
+    ?`<div class="share-qr-workspace"><div class="share-qr"><img src="${qrUrl}" alt="QR code linking to ${esc(doc.name)}" onerror="this.hidden=true;this.nextElementSibling.hidden=false"><span hidden>QR generation is unavailable. Install the QR utility on the GarageLog host.</span></div><div class="share-qr-copy"><strong>Document QR code</strong><p>Scanning this code opens the active link shown above.</p><small>${esc(shareAccessText(currentShare))}</small><a class="secondary" href="${qrUrl}" download="garagelog-document-qr.svg">${svg('download')} Download QR SVG</a></div></div>`
+    :`<button type="button" class="share-qr-placeholder generate-qr">${svg('qr')}<span><strong>Generate a QR code</strong><small>Useful for labels, folders, or quickly opening this document from another device.</small></span></button>`;
+
+   shareWorkspace=`<div class="share-link-panel"><div class="share-link-status-row"><span class="share-status-pill active">Active</span><small>Expires: ${esc(shareExpirationText(currentShare))}</small></div><label>Share link<input class="share-link-input" value="${esc(link)}" readonly></label><div class="share-link-actions"><button type="button" class="secondary copy-share">${svg('share')} Copy Link</button><a class="secondary" href="mailto:?subject=${encodeURIComponent(`GarageLog document: ${doc.name}`)}&body=${encodeURIComponent(link)}">Email Link</a><button type="button" class="secondary generate-qr">${svg('qr')} ${qrVisible?'Refresh QR Code':'Generate QR Code'}</button><button type="button" class="secondary revoke-share">Revoke</button></div>${qrWorkspace}</div>`
+  }else{
+   shareWorkspace=`<div class="share-create-panel">${fileTypeIcon(doc)}<div><strong>${esc(doc.name)}</strong><p>Create a revocable link. GarageLog will keep it in Active Share Links until it is revoked or expires.</p><label class="share-expiry-create">Expiration<select class="share-expiry"><option value="" selected>Never</option><option value="1">1 day</option><option value="7">7 days</option><option value="30">30 days</option></select></label></div><button type="button" class="primary create-share">${svg('share')} Create Link</button></div>`
+  }
+
+  dialog.innerHTML=`<div class="modal-header"><div><span class="wizard-eyebrow">LOCAL SHARING</span><h3>Share Document</h3><p>Create and manage a revocable local link for a stored document.</p></div><button type="button" class="icon-btn share-close">${svg('close')}</button></div><div class="share-dialog-body"><label>Document<select class="share-doc-select" ${loading?'disabled':''}>${documentOptions}</select></label>${shareWorkspace}<div class="share-privacy-note">Shared links are anonymous while active. GarageLog records access time and count only; it does not store visitor IP addresses for document shares.</div></div><div class="modal-actions"><button type="button" class="secondary manage-shares">${svg('shield')} Active Share Links</button><button type="button" class="primary share-done">Done</button></div>`;
 
   dialog.querySelector('.share-close').onclick=()=>dialog.close();
   dialog.querySelector('.share-done').onclick=()=>dialog.close();
-  dialog.querySelector('.share-doc-select').onchange=e=>{selected=Number(e.target.value);qrVisible=false;draw()};
+  dialog.querySelector('.manage-shares').onclick=()=>{dialog.close();openDocumentShareManager()};
+  dialog.querySelector('.share-doc-select').onchange=e=>selectDocument(Number(e.target.value));
 
-  dialog.querySelector('.create-share')?.addEventListener('click',()=>commitShareChange(
-   doc,
-   ()=>{doc.shareToken=makeShareToken();doc.shareEnabled=true;qrVisible=false},
-   'Share link created'
-  ));
+  dialog.querySelector('.create-share')?.addEventListener('click',async()=>{
+   if(busy)return;
+   busy=true;
+   try{
+    const raw=dialog.querySelector('.share-expiry')?.value||'';
+    const expiresInDays=raw?Number(raw):null;
+    await ensureSelectedShare(expiresInDays);
+    qrVisible=true;
+    draw();
+    toast('Share link created and QR code generated')
+   }catch(error){
+    toast(error.message||'Unable to create the share link')
+   }finally{
+    busy=false
+   }
+  });
 
-  dialog.querySelector('.revoke-share')?.addEventListener('click',()=>commitShareChange(
-   doc,
-   ()=>{doc.shareToken=null;doc.shareEnabled=false;qrVisible=false},
-   'Share link revoked'
-  ));
+  dialog.querySelector('.revoke-share')?.addEventListener('click',async()=>{
+   if(!currentShare||busy)return;
+   busy=true;
+   try{
+    await documentShareRequest(`/api/document-shares/${encodeURIComponent(currentShare.token)}/revoke`,{method:'POST'});
+    await refreshShares();
+    qrVisible=false;
+    draw();
+    toast('Share link revoked')
+   }catch(error){
+    toast(error.message||'Unable to revoke the share link')
+   }finally{
+    busy=false
+   }
+  });
 
   dialog.querySelector('.copy-share')?.addEventListener('click',async()=>{
    const copied=await copyTextToClipboard(link);
@@ -769,17 +859,25 @@ function openDocumentShare(initialIndex=null){
   });
 
   dialog.querySelectorAll('.generate-qr').forEach(button=>button.addEventListener('click',async()=>{
+   if(!currentShare||busy)return;
    if(!qrVisible){
     qrVisible=true;
     draw();
     toast('QR code generated');
     return
    }
-   await commitShareChange(
-    doc,
-    ()=>{doc.shareToken=makeShareToken();doc.shareEnabled=true;qrVisible=true},
-    'QR code refreshed; share link updated'
-   )
+   busy=true;
+   try{
+    const result=await documentShareRequest(`/api/document-shares/${encodeURIComponent(currentShare.token)}/rotate`,{method:'POST'});
+    updateLocalShare(result.share);
+    qrVisible=true;
+    draw();
+    toast('QR code refreshed; previous share link revoked')
+   }catch(error){
+    toast(error.message||'Unable to refresh the QR code')
+   }finally{
+    busy=false
+   }
   }))
  };
 
@@ -787,6 +885,120 @@ function openDocumentShare(initialIndex=null){
  dialog.showModal()
 }
 window.openDocumentShare=openDocumentShare;
+
+async function openDocumentShareManager(){
+ const dialog=ensureDynamicDialog('documentShareManagerDialog','document-share-manager-dialog');
+ let shares=[];
+ const load=async()=>{shares=await listDocumentShares()};
+ try{await load()}catch(error){toast(error.message||'Unable to load active share links');return}
+
+ const documentFor=share=>state.documents.find(doc=>doc.storedName===share.storedName)||null;
+ const vehicleFor=doc=>doc?vehicleNameFromId(doc.vehicleId):'Document no longer in library';
+ const formatShareDate=value=>{
+  if(!value)return'—';
+  const date=new Date(value);
+  return Number.isNaN(date.getTime())?'—':date.toLocaleString()
+ };
+ const statusTone=status=>status==='Active'?'active':status==='Expired'?'expired':'revoked';
+
+ const rowHtml=share=>{
+  const doc=documentFor(share);
+  const index=doc?state.documents.indexOf(doc):-1;
+  const icon=doc?fileTypeIcon(doc,true):`<span class="mini-doc-icon slate">${svg('file')}</span>`;
+  const historyNote=share.status==='Expired'
+   ?'This link expired and no longer opens the document.'
+   :'This link was revoked and no longer opens the document.';
+  const actions=share.status==='Active'
+   ?`<div class="share-manager-actions"><button type="button" class="secondary" data-share-copy="${esc(share.token)}">${svg('share')} Copy</button><button type="button" class="secondary" data-share-qr="${index}" ${index<0?'disabled':''}>${svg('qr')} QR</button><button type="button" class="secondary" data-share-rotate="${esc(share.token)}">${svg('qr')} Rotate Link</button><label class="share-expiration-update"><span>Expiration</span><select data-share-expiry="${esc(share.token)}"><option value="keep">Keep current</option><option value="">Never</option><option value="1">1 day from now</option><option value="7">7 days from now</option><option value="30">30 days from now</option></select></label><button type="button" class="secondary" data-share-expiry-save="${esc(share.token)}">Update</button><button type="button" class="danger-outline" data-share-revoke="${esc(share.token)}">Revoke</button></div>`
+   :`<div class="share-manager-history-note">${historyNote}</div>`;
+
+  return `<article class="share-manager-row ${statusTone(share.status)}" data-share-token="${esc(share.token)}"><div class="share-manager-document">${icon}<div><strong>${esc(doc?.name||share.storedName)}</strong><small>${esc(vehicleFor(doc))}</small></div><span class="share-status-pill ${statusTone(share.status)}">${esc(share.status)}</span></div><dl class="share-manager-meta"><div><dt>Created</dt><dd>${esc(formatShareDate(share.createdUtc))}</dd></div><div><dt>Created by</dt><dd>${esc(share.createdBy||'Legacy share')}</dd></div><div><dt>Last accessed</dt><dd>${esc(formatShareDate(share.lastAccessUtc))}</dd></div><div><dt>Accesses</dt><dd>${number(share.accessCount||0)}</dd></div><div><dt>Expires</dt><dd>${esc(shareExpirationText(share))}</dd></div></dl>${actions}</article>`
+ };
+
+ const draw=()=>{
+  const active=shares.filter(share=>share.status==='Active');
+  const history=shares.filter(share=>share.status!=='Active');
+  const rows=[...active,...history];
+  const listHtml=rows.length
+   ?rows.map(rowHtml).join('')
+   :`<div class="share-manager-empty"><span>${svg('shield')}</span><strong>No share links yet</strong><p>Create a document share to begin tracking it here.</p></div>`;
+
+  dialog.innerHTML=`<div class="modal-header"><div><span class="wizard-eyebrow">SHARING SECURITY</span><h3>Active Share Links</h3><p>Review anonymous document links, expiration, access history, and revocation status.</p></div><button type="button" class="icon-btn share-manager-close">${svg('close')}</button></div><div class="share-manager-body"><div class="share-manager-summary"><div><strong>${active.length}</strong><span>Active</span></div><div><strong>${shares.filter(share=>share.status==='Expired').length}</strong><span>Expired</span></div><div><strong>${shares.filter(share=>share.status==='Revoked').length}</strong><span>Revoked</span></div><button type="button" class="danger-outline revoke-all-shares" ${active.length?'':'disabled'}>${svg('trash')} Revoke All Active</button></div><div class="share-manager-list">${listHtml}</div><div class="share-manager-security-note">${svg('shield')}<span>Rotating a link immediately revokes the previous URL. Deleting a stored document also revokes all of its share links.</span></div></div><div class="modal-actions"><button type="button" class="primary share-manager-done">Done</button></div>`;
+
+  dialog.querySelector('.share-manager-close').onclick=()=>dialog.close();
+  dialog.querySelector('.share-manager-done').onclick=()=>dialog.close();
+
+  dialog.querySelector('.revoke-all-shares')?.addEventListener('click',async()=>{
+   if(!confirm(`Revoke all ${active.length} active document share link${active.length===1?'':'s'}?`))return;
+   try{
+    const result=await documentShareRequest('/api/document-shares/revoke-all',{method:'POST'});
+    await load();
+    draw();
+    toast(`${result.revoked||0} active share link${Number(result.revoked||0)===1?'':'s'} revoked`)
+   }catch(error){
+    toast(error.message||'Unable to revoke active share links')
+   }
+  });
+
+  dialog.querySelectorAll('[data-share-copy]').forEach(button=>button.onclick=async()=>{
+   const share=shares.find(item=>item.token===button.dataset.shareCopy);
+   const copied=await copyTextToClipboard(documentShareUrl(share));
+   toast(copied?'Share link copied':'Unable to copy the share link')
+  });
+
+  dialog.querySelectorAll('[data-share-qr]').forEach(button=>button.onclick=()=>{
+   const index=Number(button.dataset.shareQr);
+   if(index<0)return;
+   dialog.close();
+   openDocumentShare(index,{showQr:true})
+  });
+
+  dialog.querySelectorAll('[data-share-rotate]').forEach(button=>button.onclick=async()=>{
+   try{
+    await documentShareRequest(`/api/document-shares/${encodeURIComponent(button.dataset.shareRotate)}/rotate`,{method:'POST'});
+    await load();
+    draw();
+    toast('Share link rotated; previous URL revoked')
+   }catch(error){
+    toast(error.message||'Unable to rotate the share link')
+   }
+  });
+
+  dialog.querySelectorAll('[data-share-revoke]').forEach(button=>button.onclick=async()=>{
+   try{
+    await documentShareRequest(`/api/document-shares/${encodeURIComponent(button.dataset.shareRevoke)}/revoke`,{method:'POST'});
+    await load();
+    draw();
+    toast('Share link revoked')
+   }catch(error){
+    toast(error.message||'Unable to revoke the share link')
+   }
+  });
+
+  dialog.querySelectorAll('[data-share-expiry-save]').forEach(button=>button.onclick=async()=>{
+   const token=button.dataset.shareExpirySave;
+   const select=dialog.querySelector(`[data-share-expiry="${CSS.escape(token)}"]`);
+   if(!select||select.value==='keep'){toast('Choose a new expiration setting');return}
+   const expiresInDays=select.value?Number(select.value):null;
+   try{
+    await documentShareRequest(`/api/document-shares/${encodeURIComponent(token)}/expiration`,{
+     method:'PUT',
+     headers:{'Content-Type':'application/json'},
+     body:JSON.stringify({expiresInDays})
+    });
+    await load();
+    draw();
+    toast(expiresInDays?`Share link expires in ${expiresInDays} day${expiresInDays===1?'':'s'}`:'Share link expiration removed')
+   }catch(error){
+    toast(error.message||'Unable to update link expiration')
+   }
+  })
+ };
+
+ draw();
+ dialog.showModal()
+}
+window.openDocumentShareManager=openDocumentShareManager;
 function openDocumentSelection(mode){
  const stored=state.documents.map((doc,index)=>({doc,index})).filter(item=>item.doc.storedName);
  if(!stored.length){toast('No stored documents are available');return}
@@ -1603,7 +1815,7 @@ function documents(){
    <section class="card documents-side-card storage-summary-card"><div class="documents-side-heading"><h3>Storage Summary</h3><span class="info-icon">${svg('info')}</span></div><div class="storage-summary-layout"><div class="storage-ring storage-ring-large" style="background:conic-gradient(var(--blue) 0 ${Math.max(1,usedPct)}%, #e5e7eb ${Math.max(1,usedPct)}% 100%)"><span><strong>${formatBytes(stored)}</strong><small>of 5 GB used</small></span></div><div class="storage-summary-metrics"><div><i class="legend-blue"></i><span>Used</span><b>${formatBytes(stored)} (${Math.round(usedPct)}%)</b></div><div><i class="legend-slate"></i><span>Available</span><b>${formatBytes(capacity-stored)} (${Math.round(availablePct)}%)</b></div><button class="link-button" onclick="documentAction('manageStorage')">Manage Storage</button></div></div></section>
    <section class="card documents-side-card"><div class="documents-side-heading"><h3>Recently Viewed</h3></div><div class="documents-side-list">${fallbackRecentViewed.map(doc=>`<button onclick="openDocument(${doc._index})">${fileTypeIcon(doc,true)}<span><strong>${esc(doc.name)}</strong></span><em>${esc(relativeTime(doc.lastViewedAt||doc.addedAt||doc.date))}</em></button>`).join('')||'<p class="muted">Open a file to track recent activity.</p>'}<button class="link-button side-link-button" onclick="goPage('Documents')">View All</button></div></section>
    <section class="card documents-side-card"><div class="documents-side-heading"><h3>Expiring Documents</h3></div><div class="documents-side-list">${expiring.length?expiring.map(item=>{const days=Math.max(0,Math.ceil((item.expiry.getTime()-Date.now())/86400000));return `<button onclick="openDocument(${item.doc._index})"><span class="mini-doc-icon ${days<45?'orange':'slate'}">${svg('calendar')}</span><span><strong>${esc(item.doc.name)}</strong><small>Expires on ${item.expiry.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})} (${days} days)</small></span><em>›</em></button>`}).join(''):`<p class="muted">Insurance and registration documents will appear here when available.</p>`}<button class="link-button side-link-button" onclick="goPage('Documents')">View All Expiring</button></div></section>
-   <section class="card documents-side-card"><div class="documents-side-heading"><h3>Share & Export</h3></div><div class="documents-side-list action-list"><button onclick="documentAction('share')"><span class="mini-doc-icon slate">${svg('share')}</span><span><strong>Share Document</strong><small>Create a unique local link, email it, or show a QR code</small></span><em>›</em></button><button onclick="documentAction('export')"><span class="mini-doc-icon slate">${svg('download')}</span><span><strong>Export Documents</strong><small>Package selected files as a ZIP archive</small></span><em>›</em></button><button onclick="documentAction('print')"><span class="mini-doc-icon slate">${svg('printer')}</span><span><strong>Print Documents</strong><small>Select files and build a print queue</small></span><em>›</em></button></div></section>
+    <section class="card documents-side-card"><div class="documents-side-heading"><h3>Share & Export</h3></div><div class="documents-side-list action-list"><button onclick="documentAction('share')"><span class="mini-doc-icon slate">${svg('share')}</span><span><strong>Share Document</strong><small>Create or reuse a revocable local link and QR code</small></span><em>›</em></button><button onclick="documentAction('shareManager')"><span class="mini-doc-icon slate">${svg('shield')}</span><span><strong>Active Share Links</strong><small>Review access, expiration, rotation, and revocation</small></span><em>›</em></button><button onclick="documentAction('export')"><span class="mini-doc-icon slate">${svg('download')}</span><span><strong>Export Documents</strong><small>Package selected files as a ZIP archive</small></span><em>›</em></button><button onclick="documentAction('print')"><span class="mini-doc-icon slate">${svg('printer')}</span><span><strong>Print Documents</strong><small>Select files and build a print queue</small></span><em>›</em></button></div></section>
   </aside></div>`}
 
 
@@ -2017,16 +2229,50 @@ function applicableVehicleTemplates(powertrain,vehicle=activeVehicle()){
  }
  return base
 }
-function vehicleTemplatePickerHtml(powertrain){
- const templates=applicableVehicleTemplates(powertrain),groups=[...new Set(templates.map(item=>item.group))];
- return `<div class="vehicle-template-picker full"><div class="vehicle-template-heading"><div><h4>Maintenance & reminder templates</h4><p>Recommended defaults for <strong>${esc(powertrain)}</strong>. Uncheck anything you do not want.</p></div><div class="vehicle-template-actions"><button type="button" onclick="setVehicleTemplateChecks(true)">Select recommended</button><button type="button" onclick="setVehicleTemplateChecks(false)">Clear all</button></div></div><div class="vehicle-template-groups">${groups.map(group=>`<section><h5>${esc(group)}</h5><div class="vehicle-template-grid">${templates.filter(item=>item.group===group).map(item=>`<label class="vehicle-template-option"><input type="checkbox" name="Maintenance Template" value="${item.key}" ${item.recommended?'checked':''}><span class="vehicle-template-icon ${maintenanceTone(item.name)}">${svg(maintenanceIcon(item.name))}</span><span><strong>${esc(item.name)}</strong><small>${esc(item.description)}</small><em>${item.miles?`${number(item.miles)} mi`:`Every ${item.months} month${item.months===1?'':'s'}`}</em></span></label>`).join('')}</div></section>`).join('')}</div><div class="vehicle-template-note">Intervals are starting defaults only. Manufacturer schedules, severe-duty use, and local regulations should take priority.</div></div>`
+function vehicleTemplatePickerHtml(powertrain,vehicle={type:'Car'}){
+ const templates=applicableVehicleTemplates(powertrain,vehicle),groups=[...new Set(templates.map(item=>item.group))],vehicleType=normalizedVehicleType(vehicle),contextLabel=vehicleType==='Trailer'?'Trailer':`${vehicleType} · ${powertrain}`;
+ return `<div class="vehicle-template-picker full"><div class="vehicle-template-heading"><div><h4>Maintenance & reminder templates</h4><p>Recommended starting points for <strong>${esc(contextLabel)}</strong>. Uncheck anything you do not want.</p></div><div class="vehicle-template-actions"><button type="button" onclick="setVehicleTemplateChecks(true)">Select recommended</button><button type="button" onclick="setVehicleTemplateChecks(false)">Clear all</button></div></div><div class="vehicle-template-groups">${groups.map(group=>`<section><h5>${esc(group)}</h5><div class="vehicle-template-grid">${templates.filter(item=>item.group===group).map(item=>`<label class="vehicle-template-option"><input type="checkbox" name="Maintenance Template" value="${item.key}" ${item.recommended?'checked':''}><span class="vehicle-template-icon ${maintenanceTone(item.name)}">${svg(maintenanceIcon(item.name))}</span><span><strong>${esc(item.name)}</strong><small>${esc(item.description)}</small><em>${item.miles?`${number(item.miles)} mi`:`Every ${item.months} month${item.months===1?'':'s'}`}</em></span></label>`).join('')}</div></section>`).join('')}</div><div class="vehicle-template-note">Intervals are starting defaults only. Manufacturer schedules, severe-duty use, and local regulations should take priority.</div></div>`
 }
-function refreshVehicleTemplatePicker(powertrain){const host=document.getElementById('vehicleTemplatePickerHost');if(host)host.innerHTML=vehicleTemplatePickerHtml(powertrain)}
-window.setVehicleTemplateChecks=function(recommended){document.querySelectorAll('#vehicleTemplatePickerHost input[name="Maintenance Template"]').forEach(input=>input.checked=recommended?VEHICLE_TEMPLATE_CATALOG.find(item=>item.key===input.value)?.recommended:false)}
+function pendingVehicleAddType(){return document.querySelector('#modal input[name="Vehicle Type"]:checked')?.value||'Car'}
+function pendingVehicleAddPowertrain(){
+ const type=pendingVehicleAddType();
+ return type==='Trailer'?'Not Applicable':document.getElementById('vehicleAddPowertrain')?.value||'Gasoline / Internal Combustion'
+}
+function refreshVehicleTemplatePicker(powertrain=pendingVehicleAddPowertrain(),vehicleType=pendingVehicleAddType()){
+ const host=document.getElementById('vehicleTemplatePickerHost');if(host)host.innerHTML=vehicleTemplatePickerHtml(powertrain,{type:vehicleType})
+}
+window.setVehicleTemplateChecks=function(recommended){
+ const type=pendingVehicleAddType(),powertrain=pendingVehicleAddPowertrain(),catalog=new Map(applicableVehicleTemplates(powertrain,{type}).map(item=>[item.key,item]));
+ document.querySelectorAll('#vehicleTemplatePickerHost input[name="Maintenance Template"]').forEach(input=>input.checked=recommended?Boolean(catalog.get(input.value)?.recommended):false)
+}
+function vehicleAddTypeCard(type,label,description,icon){
+ return `<label class="vehicle-add-type-card"><input type="radio" name="Vehicle Type" value="${type}" ${type==='Car'?'checked':''}><span class="vehicle-add-type-icon">${svg(icon)}</span><span><strong>${label}</strong><small>${description}</small></span><i>${svg('check')}</i></label>`
+}
+function vehicleAddContextFieldsHtml(type){
+ if(type==='Trailer'){
+  return `<section class="vehicle-add-section trailer-spec-section"><div class="vehicle-add-section-head"><span class="wizard-eyebrow">TRAILER DETAILS</span><h4>Towing and chassis information</h4><p>Trailer records use towing, capacity, axle, hitch, and brake information instead of engine, transmission, drivetrain, or odometer fields.</p></div><div class="vehicle-add-grid">${vehicleField('Trailer Type','Trailer Type','Utility','select',['Utility','Enclosed Cargo','Flatbed','Travel Trailer','Boat Trailer','Car Hauler','Equipment','Dump','Livestock','Other'])}${vehicleField('GVWR (lb)','GVWR','', 'number')}${vehicleField('Empty Weight (lb)','Empty Weight','', 'number')}${vehicleField('Axle Count','Axle Count','1','number')}${vehicleField('Coupler / Hitch Type','Coupler Type','2 in Ball','select',['1-7/8 in Ball','2 in Ball','2-5/16 in Ball','Pintle','Fifth Wheel','Gooseneck','Other'],'wide-field')}${vehicleField('Brake Type','Brake Type','Electric','select',['Electric','Surge / Hydraulic','Electric-over-Hydraulic','None / Unbraked','Other'],'wide-field')}</div></section>`
+ }
+ return `<section class="vehicle-add-section"><div class="vehicle-add-section-head"><span class="wizard-eyebrow">POWERTRAIN & ODOMETER</span><h4>${type==='Motorcycle'?'Motorcycle mechanical details':'Mechanical details'}</h4><p>${type==='Motorcycle'?'Use the motorcycle powertrain, engine, transmission, final-drive description, and current odometer.':'These details drive maintenance templates and service forecasting.'}</p></div><div class="vehicle-add-grid">${vehicleField('Powertrain','Powertrain','Gasoline / Internal Combustion','select',VEHICLE_POWERTRAINS,'powertrain-field').replace('<select name="Powertrain">','<select name="Powertrain" id="vehicleAddPowertrain">')}${vehicleField('Trim','Trim','')}${vehicleField('Engine','Engine','')}${vehicleField('Transmission','Transmission','')}${vehicleField(type==='Motorcycle'?'Final Drive / Drivetrain':'Drivetrain','Drivetrain','')}${vehicleField('Current Mileage','Current Mileage',0,'number',null,'mileage-field')}</div></section>`
+}
+function vehicleAddFieldsHtml(){
+ return `<div class="vehicle-add-workspace"><section class="vehicle-add-section vehicle-add-type-section"><div class="vehicle-add-section-head"><span class="wizard-eyebrow">VEHICLE TYPE</span><h4>What are you adding?</h4><p>The form and recommended maintenance change automatically for the selected vehicle type.</p></div><div class="vehicle-add-type-grid">${vehicleAddTypeCard('Car','Car','Passenger car or crossover','car')}${vehicleAddTypeCard('Truck','Truck','Pickup or light truck','car')}${vehicleAddTypeCard('Motorcycle','Motorcycle','Street, touring, cruiser, or sport bike','tire')}${vehicleAddTypeCard('Trailer','Trailer','Towable trailer with no powertrain or odometer','archive')}</div></section><section class="vehicle-add-section"><div class="vehicle-add-section-head"><span class="wizard-eyebrow">IDENTITY</span><h4>Vehicle identification</h4><p>Use the manufacturer information you have available. VIN is optional.</p></div><div class="vehicle-add-grid">${vehicleField('Year','Year','')}${vehicleField('Make / Manufacturer','Make','')}${vehicleField('Model','Model','')}${vehicleField('Color','Color','')}${vehicleField('VIN','VIN','', 'text',null,'wide-field')}</div></section><div id="vehicleAddContextHost">${vehicleAddContextFieldsHtml('Car')}</div><section class="vehicle-add-section vehicle-add-templates-section"><div id="vehicleTemplatePickerHost">${vehicleTemplatePickerHtml('Gasoline / Internal Combustion',{type:'Car'})}</div></section></div>`
+}
+function initializeVehicleAddDialog(){
+ const contextHost=document.getElementById('vehicleAddContextHost');
+ const renderContext=()=>{
+  const type=pendingVehicleAddType();
+  if(contextHost)contextHost.innerHTML=vehicleAddContextFieldsHtml(type);
+  const powertrainSelect=document.getElementById('vehicleAddPowertrain');
+  if(powertrainSelect)powertrainSelect.onchange=()=>refreshVehicleTemplatePicker(powertrainSelect.value,type);
+  refreshVehicleTemplatePicker(type==='Trailer'?'Not Applicable':powertrainSelect?.value||'Gasoline / Internal Combustion',type)
+ };
+ document.querySelectorAll('#modal input[name="Vehicle Type"]').forEach(input=>input.onchange=renderContext);
+ renderContext()
+}
 function addMonthsFromToday(months){const date=new Date();date.setHours(12,0,0,0);date.setMonth(date.getMonth()+Number(months||0));return date.toISOString().slice(0,10)}
 function applyVehicleTemplates(vehicle,keys){
  const selected=new Set(keys||[]),mileage=Number(vehicle.mileage||0);
- applicableVehicleTemplates(vehicle.powertrain).filter(item=>selected.has(item.key)).forEach(item=>{
+ applicableVehicleTemplates(vehicle.powertrain,vehicle).filter(item=>selected.has(item.key)).forEach(item=>{
    if(item.target==='maintenance'){
      const isMileage=Number(item.miles||0)>0,intervalValue=isMileage?Number(item.miles):Number(item.months);
      state.maintenance.unshift({vehicleId:vehicle.id,name:item.name,interval:isMileage?`${number(intervalValue)} mi`:`${number(intervalValue)} months`,progress:0,max:intervalValue,due:isMileage?`${number(mileage+intervalValue)} mi`:addMonthsFromToday(intervalValue),status:'On track',templateKey:item.key,source:'vehicle-template'});
@@ -2045,7 +2291,7 @@ const configs={
  service:{title:isEdit?'Edit Maintenance':'Add Maintenance',subtitle:`Track service intervals for ${vehicleFullName()}.`,fields:[['Service Name','text',item?.name||'','full'],['Interval','text',item?.interval||'7,500 mi','half'],['Interval Value','number',item?.max||7500,'half'],['Progress','number',item?.progress||0,'half'],['Next Due','text',item?.due||'','half'],['Status','select',item?.status||'On track','half',['On track','Due soon','Overdue','Completed']]]},
  reminder:{title:isEdit?'Edit Reminder':'New Reminder',subtitle:`Stored for ${vehicleFullName()}.`,fields:[['Reminder Name','text',item?.name||'','full'],['Rule','text',item?.rule||'','half'],['Due','text',item?.due||'','half'],['Status','select',item?.status||'Upcoming','half',['Upcoming','Due Soon','Overdue','Completed']]]},
  vehicle:{title:'Edit Vehicle',subtitle:'Update vehicle details, status, and odometer.',fields:[['Vehicle Status','select',vehicleItem.lifecycleStatus||'Active','full',['Active','Sold','Decommissioned']],['Vehicle Type','select',vehicleItem.type||inferVehicleType(vehicleItem),'half',['Car','Truck','Motorcycle','Trailer']],['Powertrain','select',vehicleItem.powertrain||'Gasoline / Internal Combustion','half',VEHICLE_POWERTRAINS],['Year','text',vehicleItem.year,'half'],['Make','text',vehicleItem.make,'half'],['Model','text',vehicleItem.model,'half'],['Trim','text',vehicleItem.trim,'half'],['VIN','text',vehicleItem.vin,'full'],['Engine','text',vehicleItem.engine,'half'],['Transmission','text',vehicleItem.transmission,'half'],['Drivetrain','text',vehicleItem.drivetrain,'half'],['Color','text',vehicleItem.color,'half'],['Current Mileage','number',vehicleItem.mileage,'half']]},
- 'vehicle-add':{title:'Add Vehicle',subtitle:'Create another vehicle and identify its powertrain.',fields:[['Vehicle Type','select','Car','half',['Car','Truck','Motorcycle','Trailer']],['Powertrain','select','Gasoline / Internal Combustion','half',VEHICLE_POWERTRAINS],['Year','text','','half'],['Make','text','','half'],['Model','text','','half'],['Trim','text','','half'],['VIN','text','','full'],['Engine','text','','half'],['Transmission','text','','half'],['Drivetrain','text','','half'],['Color','text','','half'],['Current Mileage','number',0,'half']]},
+  'vehicle-add':{title:'Add Vehicle',subtitle:'Add a car, truck, motorcycle, or trailer with type-specific details and recommended maintenance.',fields:[]},
   document:{title:isEdit?'Edit Document':'Upload Document',subtitle:isEdit?'Update contextual metadata for this stored document.':`Store a file for ${vehicleFullName()}.`,fields:[]}
 };return configs[type]}
 function expenseFieldsHtml(item={}){
@@ -2187,7 +2433,7 @@ function openInfoModal(kind){
    body.innerHTML=`<div class="profile-info-card"><span class="profile-info-avatar">L</span><div><strong>Local User</strong><small>Private, self-hosted account</small></div></div><dl class="profile-detail-list"><div><dt>Storage mode</dt><dd>Local GarageLog instance</dd></div><div><dt>Active vehicle</dt><dd>${esc(vehicleFullName())}</dd></div><div><dt>Vehicles</dt><dd>${state.vehicles.length}</dd></div><div><dt>Data sharing</dt><dd>External sharing disabled</dd></div></dl>`;
  }else if(kind==='about'){
    title.textContent='Help & About';subtitle.textContent='GarageLog local-first vehicle records.';
-   body.innerHTML=`<div class="about-logo">${svg('shield')}<div><strong>GarageLog 0.7.8</strong><small>Local-first self-hosted release</small></div></div><div class="info-section"><h4>About</h4><p>GarageLog keeps vehicle, maintenance, expense, reminder, and document records on your own instance.</p></div><div class="info-section"><h4>Help</h4><p>Use Garage for vehicle details, Maintenance for service intervals, Documents for local files, and Reminders for date- or mileage-based rules.</p></div><div class="info-callout">GarageLog authentication is local to this self-hosted instance. Account records and vehicle data remain in the GarageLog data folder.</div>`;
+   body.innerHTML=`<div class="about-logo">${svg('shield')}<div><strong>GarageLog 0.7.9</strong><small>Local-first self-hosted release</small></div></div><div class="info-section"><h4>About</h4><p>GarageLog keeps vehicle, maintenance, expense, reminder, and document records on your own instance.</p></div><div class="info-section"><h4>Help</h4><p>Use Garage for vehicle details, Maintenance for service intervals, Documents for local files, and Reminders for date- or mileage-based rules.</p></div><div class="info-callout">GarageLog authentication is local to this self-hosted instance. Account records and vehicle data remain in the GarageLog data folder.</div>`;
  }else{
    title.textContent='Log out';subtitle.textContent='End this local browser session.';
    body.innerHTML=`<div class="logout-warning">${svg('logout')}<div><strong>Log out of GarageLog?</strong><p>Your local records will remain saved. This only closes the current interface session.</p></div></div>`;
@@ -2430,21 +2676,25 @@ document.getElementById('modalForm').addEventListener('submit',async e=>{if(e.su
  else if(type==='service'){const existing=index!==null?state.maintenance[index]:null;const x={...existing,vehicleId:existing?.vehicleId||state.activeVehicleId,name:fd.get('Service Name'),interval:fd.get('Interval'),progress:Number(fd.get('Progress')),max:Number(fd.get('Interval Value')),due:fd.get('Next Due'),status:fd.get('Status')};index!==null?state.maintenance[index]=x:state.maintenance.unshift(x)}
  else if(type==='reminder'){const existing=index!==null?state.reminders[index]:null;const x={...existing,vehicleId:existing?.vehicleId||state.activeVehicleId,name:fd.get('Reminder Name'),rule:fd.get('Rule'),due:fd.get('Due'),status:fd.get('Status')};index!==null?state.reminders[index]=x:state.reminders.unshift(x)}
  else if(type==='vehicle'||type==='vehicle-add'){
-   const existing=type==='vehicle'?state.vehicles[index]:null;
-   const year=String(fd.get('Year')||'').trim(),make=String(fd.get('Make')||'').trim(),model=String(fd.get('Model')||'').trim(),mileage=Number(fd.get('Current Mileage')||0),powertrain=String(fd.get('Powertrain')||'Gasoline / Internal Combustion'),lifecycleStatus=existing?String(fd.get('Vehicle Status')||existing.lifecycleStatus||'Active'):'Active';
-   if(!year&&!make&&!model)throw new Error('Enter at least a year, make, or model.');
-   if(existing&&!isVehicleArchived(existing)&&['Sold','Decommissioned'].includes(lifecycleStatus)&&activeFleetVehicles().length<=1)throw new Error('Add or restore another active vehicle before archiving this one.');
-   const vehicle={...(existing||{}),id:existing?.id||makeVehicleId(),type:fd.get('Vehicle Type')||'Car',powertrain,lifecycleStatus,archivedAt:['Sold','Decommissioned'].includes(lifecycleStatus)?(existing?.archivedAt||new Date().toISOString()):null,year,make,model,name:[year,make,model].filter(Boolean).join(' '),trim:fd.get('Trim'),engine:fd.get('Engine'),transmission:fd.get('Transmission'),drivetrain:fd.get('Drivetrain'),vin:fd.get('VIN'),color:fd.get('Color'),imageStoredName:existing?.imageStoredName||null,mileage,mileageHistory:existing?.mileageHistory||[{date:new Date().toISOString(),mileage,source:'Vehicle added'}],metrics:existing?.metrics||{averageMpg:0}};
-   if(existing){
-     if(mileage!==Number(existing.mileage||0))vehicle.mileageHistory=[...vehicle.mileageHistory,{date:new Date().toISOString(),mileage,source:'Vehicle edit'}];
-     const wasActive=existing.id===state.activeVehicleId;state.vehicles[index]=vehicle;
-     if(wasActive&&isVehicleArchived(vehicle)){const next=state.vehicles.find(item=>item.id!==vehicle.id&&!isVehicleArchived(item));if(next){state.activeVehicleId=next.id;state.vehicle=next;state.mileage=Number(next.mileage||0);state.mileageHistory=next.mileageHistory||[];state.metrics=next.metrics||{averageMpg:0}}else{state.vehicle=vehicle;state.mileage=vehicle.mileage;state.mileageHistory=vehicle.mileageHistory;state.metrics=vehicle.metrics}}
-     else if(wasActive){state.vehicle=vehicle;state.mileage=vehicle.mileage;state.mileageHistory=vehicle.mileageHistory;state.metrics=vehicle.metrics}
-   }else{
-     persistActiveVehicle();state.vehicles.push(vehicle);state.activeVehicleId=vehicle.id;state.vehicle=vehicle;state.mileage=vehicle.mileage;state.mileageHistory=vehicle.mileageHistory;state.metrics=vehicle.metrics;
-   }
- }
-  else if(type==='document'){
+    const existing=type==='vehicle'?state.vehicles[index]:null;
+    const vehicleType=String(fd.get('Vehicle Type')||existing?.type||'Car'),isTrailer=vehicleType==='Trailer';
+    const year=String(fd.get('Year')||'').trim(),make=String(fd.get('Make')||'').trim(),model=String(fd.get('Model')||'').trim(),mileage=isTrailer?0:Number(fd.get('Current Mileage')||0),powertrain=isTrailer?'Not Applicable':String(fd.get('Powertrain')||existing?.powertrain||'Gasoline / Internal Combustion'),lifecycleStatus=existing?String(fd.get('Vehicle Status')||existing.lifecycleStatus||'Active'):'Active';
+    if(!year&&!make&&!model)throw new Error('Enter at least a year, make, or model.');
+    if(existing&&!isVehicleArchived(existing)&&['Sold','Decommissioned'].includes(lifecycleStatus)&&activeFleetVehicles().length<=1)throw new Error('Add or restore another active vehicle before archiving this one.');
+    const trailerValue=(name,fallback='')=>isTrailer?String(fd.get(name)??existing?.[name==='Trailer Type'?'trailerType':name==='GVWR'?'gvwr':name==='Empty Weight'?'emptyWeight':name==='Axle Count'?'axleCount':name==='Coupler Type'?'couplerType':'brakeType']??fallback):null;
+    const priorMileageHistory=existing?.mileageHistory||[];
+    const vehicle={...(existing||{}),id:existing?.id||makeVehicleId(),type:vehicleType,powertrain,lifecycleStatus,archivedAt:['Sold','Decommissioned'].includes(lifecycleStatus)?(existing?.archivedAt||new Date().toISOString()):null,year,make,model,name:[year,make,model].filter(Boolean).join(' '),trim:isTrailer?'':String(fd.get('Trim')??existing?.trim??''),engine:isTrailer?'':String(fd.get('Engine')??existing?.engine??''),transmission:isTrailer?'':String(fd.get('Transmission')??existing?.transmission??''),drivetrain:isTrailer?'':String(fd.get('Drivetrain')??existing?.drivetrain??''),vin:String(fd.get('VIN')??existing?.vin??''),color:String(fd.get('Color')??existing?.color??''),trailerType:trailerValue('Trailer Type'),gvwr:trailerValue('GVWR'),emptyWeight:trailerValue('Empty Weight'),axleCount:trailerValue('Axle Count','1'),couplerType:trailerValue('Coupler Type'),brakeType:trailerValue('Brake Type'),imageStoredName:existing?.imageStoredName||null,mileage,mileageHistory:isTrailer?[]:(existing?priorMileageHistory:[{date:new Date().toISOString(),mileage,source:'Vehicle added'}]),metrics:existing?.metrics||{averageMpg:0}};
+    if(existing){
+      if(!isTrailer&&mileage!==Number(existing.mileage||0))vehicle.mileageHistory=[...vehicle.mileageHistory,{date:new Date().toISOString(),mileage,source:'Vehicle edit'}];
+      const wasActive=existing.id===state.activeVehicleId;state.vehicles[index]=vehicle;
+      if(wasActive&&isVehicleArchived(vehicle)){const next=state.vehicles.find(item=>item.id!==vehicle.id&&!isVehicleArchived(item));if(next){state.activeVehicleId=next.id;state.vehicle=next;state.mileage=Number(next.mileage||0);state.mileageHistory=next.mileageHistory||[];state.metrics=next.metrics||{averageMpg:0}}else{state.vehicle=vehicle;state.mileage=vehicle.mileage;state.mileageHistory=vehicle.mileageHistory;state.metrics=vehicle.metrics}}
+      else if(wasActive){state.vehicle=vehicle;state.mileage=vehicle.mileage;state.mileageHistory=vehicle.mileageHistory;state.metrics=vehicle.metrics}
+    }else{
+      persistActiveVehicle();state.vehicles.push(vehicle);state.activeVehicleId=vehicle.id;state.vehicle=vehicle;state.mileage=vehicle.mileage;state.mileageHistory=vehicle.mileageHistory;state.metrics=vehicle.metrics;
+      applyVehicleTemplates(vehicle,fd.getAll('Maintenance Template'))
+    }
+  }
+else if(type==='document'){
     const isEdit=index!==null&&index!==undefined,category=normalizeDocumentCategory(fd.get('Category')),tags=String(fd.get('Tags')||'').split(',').map(tag=>tag.trim().toLowerCase()).filter(Boolean).slice(0,12),services=category==='Receipts'?normalizeServiceValues(fd.get('Service')):[],shop=category==='Receipts'?String(fd.get('Shop')||'').trim():'',startsOn=['Registration','Insurance'].includes(category)?String(fd.get('Start Date')||''):'' ,expiresOn=['Registration','Insurance','Warranties'].includes(category)?String(fd.get('Expiration Date')||''):'';
     if(startsOn&&expiresOn&&startsOn>expiresOn)throw new Error('The start date must be on or before the expiration date.');
     if(isEdit){

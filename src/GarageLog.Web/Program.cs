@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO.Compression;
 using System.Security.Claims;
+using System.Security.Cryptography;
 using System.Text.Json.Nodes;
 using System.Net;
 using System.Net.Http.Headers;
@@ -20,7 +21,7 @@ using Microsoft.AspNetCore.Identity;
 using UglyToad.PdfPig;
 using UglyToad.PdfPig.DocumentLayoutAnalysis.TextExtractor;
 
-const string GarageLogVersion = "0.7.8";
+const string GarageLogVersion = "0.7.9";
 var builder = WebApplication.CreateBuilder(args);
 
 builder.WebHost.UseUrls(
@@ -161,6 +162,7 @@ var connectionString = new SqliteConnectionStringBuilder
 }.ToString();
 
 await InitializeDatabaseAsync(connectionString);
+await MigrateLegacyDocumentSharesAsync(connectionString);
 var passwordHasher = app.Services.GetRequiredService<IPasswordHasher<GarageLogUser>>();
 var updateCacheGate = new SemaphoreSlim(1, 1);
 UpdateCacheEntry? updateCache = null;
@@ -838,6 +840,133 @@ app.MapPost("/api/documents/export", async (DocumentExportRequest request, HttpC
     return Results.File(output.ToArray(), "application/zip", $"garagelog-documents-{DateTime.Now:yyyyMMdd-HHmm}.zip");
 });
 
+app.MapGet("/api/document-shares", async (HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    if (user is null) return Results.Unauthorized();
+
+    var links = await ReadDocumentShareLinksAsync(connectionString);
+    var visible = new List<DocumentShareLinkDto>();
+    foreach (var link in links)
+    {
+        if (CanViewAllVehicles(user) || await CanAccessDocumentAsync(connectionString, user, link.StoredName))
+            visible.Add(ToDocumentShareDto(link));
+    }
+
+    return Results.Ok(new { shares = visible });
+});
+
+app.MapPost("/api/document-shares", async (DocumentShareCreateRequest request, HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    if (user is null) return Results.Unauthorized();
+    if (!IsSupportedShareExpiration(request.ExpiresInDays))
+        return Results.BadRequest(new { error = "Share expiration must be Never, 1 day, 7 days, or 30 days." });
+
+    var safeName = Path.GetFileName(request.StoredName ?? string.Empty);
+    if (string.IsNullOrWhiteSpace(safeName))
+        return Results.BadRequest(new { error = "A stored document is required." });
+    if (!await CanAccessDocumentAsync(connectionString, user, safeName))
+        return Results.NotFound(new { error = "The selected document is unavailable." });
+
+    var path = Path.Combine(documentsDirectory, safeName);
+    if (!File.Exists(path))
+        return Results.NotFound(new { error = "The stored document file was not found." });
+
+    var existing = await FindActiveDocumentShareAsync(connectionString, safeName);
+    if (existing is not null)
+        return Results.Ok(new { share = ToDocumentShareDto(existing), created = false });
+
+    var expiresUtc = request.ExpiresInDays.HasValue
+        ? DateTimeOffset.UtcNow.AddDays(request.ExpiresInDays.Value)
+        : (DateTimeOffset?)null;
+    var created = await CreateDocumentShareAsync(
+        connectionString,
+        safeName,
+        user.Id,
+        user.DisplayName,
+        expiresUtc);
+
+    return Results.Ok(new { share = ToDocumentShareDto(created), created = true });
+});
+
+app.MapPost("/api/document-shares/{token}/rotate", async (string token, HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    if (user is null) return Results.Unauthorized();
+
+    var existing = await GetDocumentShareAsync(connectionString, token);
+    if (existing is null || existing.Status != "Active")
+        return Results.NotFound(new { error = "The active share link was not found." });
+    if (!await CanAccessDocumentAsync(connectionString, user, existing.StoredName))
+        return Results.NotFound(new { error = "The selected document is unavailable." });
+
+    var rotated = await RotateDocumentShareAsync(
+        connectionString,
+        existing,
+        user.Id,
+        user.DisplayName);
+
+    return Results.Ok(new { share = ToDocumentShareDto(rotated) });
+});
+
+app.MapPost("/api/document-shares/{token}/revoke", async (string token, HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    if (user is null) return Results.Unauthorized();
+
+    var existing = await GetDocumentShareAsync(connectionString, token);
+    if (existing is null)
+        return Results.NotFound(new { error = "The share link was not found." });
+    if (!CanViewAllVehicles(user)
+        && !await CanAccessDocumentAsync(connectionString, user, existing.StoredName))
+        return Results.NotFound(new { error = "The selected document is unavailable." });
+
+    await RevokeDocumentShareAsync(connectionString, token);
+    return Results.Ok(new { revoked = true });
+});
+
+app.MapPut("/api/document-shares/{token}/expiration", async (string token, DocumentShareExpirationRequest request, HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    if (user is null) return Results.Unauthorized();
+    if (!IsSupportedShareExpiration(request.ExpiresInDays))
+        return Results.BadRequest(new { error = "Share expiration must be Never, 1 day, 7 days, or 30 days." });
+
+    var existing = await GetDocumentShareAsync(connectionString, token);
+    if (existing is null || existing.Status != "Active")
+        return Results.NotFound(new { error = "The active share link was not found." });
+    if (!await CanAccessDocumentAsync(connectionString, user, existing.StoredName))
+        return Results.NotFound(new { error = "The selected document is unavailable." });
+
+    var expiresUtc = request.ExpiresInDays.HasValue
+        ? DateTimeOffset.UtcNow.AddDays(request.ExpiresInDays.Value)
+        : (DateTimeOffset?)null;
+
+    await UpdateDocumentShareExpirationAsync(connectionString, token, expiresUtc);
+    var updated = await GetDocumentShareAsync(connectionString, token);
+    return Results.Ok(new { share = ToDocumentShareDto(updated!) });
+});
+
+app.MapPost("/api/document-shares/revoke-all", async (HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    if (user is null) return Results.Unauthorized();
+
+    var links = await ReadDocumentShareLinksAsync(connectionString);
+    var revoked = 0;
+    foreach (var link in links.Where(link => link.Status == "Active"))
+    {
+        if (!CanViewAllVehicles(user)
+            && !await CanAccessDocumentAsync(connectionString, user, link.StoredName))
+            continue;
+
+        await RevokeDocumentShareAsync(connectionString, link.Token);
+        revoked++;
+    }
+
+    return Results.Ok(new { revoked });
+});
 app.MapGet("/api/qr", async (string text) =>
 {
     if (string.IsNullOrWhiteSpace(text) || text.Length > 2048) return Results.BadRequest(new { error = "A share link is required." });
@@ -850,31 +979,30 @@ app.MapGet("/api/qr", async (string text) =>
 app.MapGet("/shared/{token}", async (string token, HttpContext context) =>
 {
     if (!Regex.IsMatch(token, "^[A-Za-z0-9_-]{16,128}$")) return Results.NotFound();
-    using var stateDocument = JsonDocument.Parse(await ReadStateAsync(connectionString));
-    if (!stateDocument.RootElement.TryGetProperty("documents", out var docs) || docs.ValueKind != JsonValueKind.Array) return Results.NotFound();
-    foreach (var doc in docs.EnumerateArray())
-    {
-        if (!doc.TryGetProperty("shareToken", out var tokenElement) || tokenElement.GetString() != token) continue;
-        if (doc.TryGetProperty("shareEnabled", out var enabled) && enabled.ValueKind == JsonValueKind.False) return Results.NotFound();
-        if (!doc.TryGetProperty("storedName", out var storedElement)) return Results.NotFound();
-        var storedName = storedElement.GetString();
-        if (string.IsNullOrWhiteSpace(storedName)) return Results.NotFound();
-        var safeName = Path.GetFileName(storedName);
-        var path = Path.Combine(documentsDirectory, safeName);
-        if (!File.Exists(path)) return Results.NotFound();
-        context.Response.Headers.CacheControl = "no-store, private";
-        context.Response.Headers["X-Robots-Tag"] = "noindex, nofollow, noarchive";
-        return Results.File(path, GetDocumentContentType(path), enableRangeProcessing: true);
-    }
-    return Results.NotFound();
-}).AllowAnonymous();
 
+    var share = await GetDocumentShareAsync(connectionString, token);
+    if (share is null || share.Status != "Active") return Results.NotFound();
+
+    var safeName = Path.GetFileName(share.StoredName);
+    var path = Path.Combine(documentsDirectory, safeName);
+    if (!File.Exists(path))
+    {
+        await RevokeDocumentShareAsync(connectionString, token);
+        return Results.NotFound();
+    }
+
+    await TouchDocumentShareAsync(connectionString, token);
+    context.Response.Headers.CacheControl = "no-store, private";
+    context.Response.Headers["X-Robots-Tag"] = "noindex, nofollow, noarchive";
+    return Results.File(path, GetDocumentContentType(path), enableRangeProcessing: true);
+}).AllowAnonymous();
 app.MapDelete("/api/documents/{storedName}", async (string storedName, HttpContext context) =>
 {
     var user = CurrentUser(context);
     if (user is null) return Results.Unauthorized();
     var safeName = Path.GetFileName(storedName);
     if (!await CanAccessDocumentAsync(connectionString, user, safeName)) return Results.NotFound();
+    await RevokeDocumentSharesAsync(connectionString, safeName);
     var path = Path.Combine(documentsDirectory, safeName);
     if (File.Exists(path)) File.Delete(path);
     foreach (var preview in Directory.EnumerateFiles(documentPreviewDirectory, $"{Path.GetFileNameWithoutExtension(safeName)}.*")) File.Delete(preview);
@@ -942,6 +1070,21 @@ static async Task InitializeDatabaseAsync(string connectionString)
             LastLoginUtc TEXT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS DocumentShareLinks (
+            Token TEXT PRIMARY KEY,
+            StoredName TEXT NOT NULL,
+            CreatedByUserId TEXT NULL,
+            CreatedUtc TEXT NOT NULL,
+            ExpiresUtc TEXT NULL,
+            RevokedUtc TEXT NULL,
+            LastAccessUtc TEXT NULL,
+            AccessCount INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY(CreatedByUserId) REFERENCES Users(Id) ON DELETE SET NULL
+        );
+        CREATE INDEX IF NOT EXISTS IX_DocumentShareLinks_StoredName
+            ON DocumentShareLinks(StoredName);
+        CREATE INDEX IF NOT EXISTS IX_DocumentShareLinks_Status
+            ON DocumentShareLinks(RevokedUtc, ExpiresUtc);
         INSERT INTO AppState (Id, Json, UpdatedUtc)
         SELECT 1, $seed, $updatedUtc
         WHERE NOT EXISTS (SELECT 1 FROM AppState WHERE Id = 1);
@@ -984,6 +1127,343 @@ static async Task WriteStateAsync(string connectionString, string json)
 }
 
 
+static bool IsSupportedShareExpiration(int? days) => days is null or 1 or 7 or 30;
+
+static string NewDocumentShareToken() =>
+    Convert.ToHexString(RandomNumberGenerator.GetBytes(24)).ToLowerInvariant();
+
+static string DocumentShareStatus(DateTimeOffset? revokedUtc, DateTimeOffset? expiresUtc)
+{
+    if (revokedUtc.HasValue) return "Revoked";
+    if (expiresUtc.HasValue && expiresUtc.Value <= DateTimeOffset.UtcNow) return "Expired";
+    return "Active";
+}
+
+static DocumentShareLinkDto ToDocumentShareDto(DocumentShareLinkRecord link) => new(
+    link.Token,
+    link.StoredName,
+    link.CreatedBy,
+    link.CreatedUtc,
+    link.ExpiresUtc,
+    link.RevokedUtc,
+    link.LastAccessUtc,
+    link.AccessCount,
+    link.Status);
+
+static DocumentShareLinkRecord ReadDocumentShareLink(SqliteDataReader reader)
+{
+    var createdUtc = DateTimeOffset.TryParse(reader.GetString(4), out var created)
+        ? created
+        : DateTimeOffset.UtcNow;
+    DateTimeOffset? expiresUtc =
+        reader.IsDBNull(5) ? null :
+        DateTimeOffset.TryParse(reader.GetString(5), out var expires) ? expires : null;
+    DateTimeOffset? revokedUtc =
+        reader.IsDBNull(6) ? null :
+        DateTimeOffset.TryParse(reader.GetString(6), out var revoked) ? revoked : null;
+    DateTimeOffset? lastAccessUtc =
+        reader.IsDBNull(7) ? null :
+        DateTimeOffset.TryParse(reader.GetString(7), out var accessed) ? accessed : null;
+
+    return new DocumentShareLinkRecord(
+        reader.GetString(0),
+        reader.GetString(1),
+        reader.IsDBNull(2) ? null : reader.GetString(2),
+        reader.IsDBNull(3) ? null : reader.GetString(3),
+        createdUtc,
+        expiresUtc,
+        revokedUtc,
+        lastAccessUtc,
+        Convert.ToInt32(reader.GetInt64(8)),
+        DocumentShareStatus(revokedUtc, expiresUtc));
+}
+
+static async Task<List<DocumentShareLinkRecord>> ReadDocumentShareLinksAsync(
+    string connectionString,
+    int limit = 200)
+{
+    var links = new List<DocumentShareLinkRecord>();
+    await using var connection = new SqliteConnection(connectionString);
+    await connection.OpenAsync();
+    await using var command = connection.CreateCommand();
+    command.CommandText = """
+        SELECT s.Token, s.StoredName, s.CreatedByUserId,
+               COALESCE(u.DisplayName, u.Username, ''),
+               s.CreatedUtc, s.ExpiresUtc, s.RevokedUtc, s.LastAccessUtc, s.AccessCount
+        FROM DocumentShareLinks s
+        LEFT JOIN Users u ON u.Id = s.CreatedByUserId
+        ORDER BY s.CreatedUtc DESC
+        LIMIT $limit;
+        """;
+    command.Parameters.AddWithValue("$limit", limit);
+
+    await using var reader = await command.ExecuteReaderAsync();
+    while (await reader.ReadAsync()) links.Add(ReadDocumentShareLink(reader));
+    return links;
+}
+
+static async Task<DocumentShareLinkRecord?> GetDocumentShareAsync(
+    string connectionString,
+    string token)
+{
+    await using var connection = new SqliteConnection(connectionString);
+    await connection.OpenAsync();
+    await using var command = connection.CreateCommand();
+    command.CommandText = """
+        SELECT s.Token, s.StoredName, s.CreatedByUserId,
+               COALESCE(u.DisplayName, u.Username, ''),
+               s.CreatedUtc, s.ExpiresUtc, s.RevokedUtc, s.LastAccessUtc, s.AccessCount
+        FROM DocumentShareLinks s
+        LEFT JOIN Users u ON u.Id = s.CreatedByUserId
+        WHERE s.Token = $token
+        LIMIT 1;
+        """;
+    command.Parameters.AddWithValue("$token", token);
+
+    await using var reader = await command.ExecuteReaderAsync();
+    return await reader.ReadAsync() ? ReadDocumentShareLink(reader) : null;
+}
+
+static async Task<DocumentShareLinkRecord?> FindActiveDocumentShareAsync(
+    string connectionString,
+    string storedName)
+{
+    await using var connection = new SqliteConnection(connectionString);
+    await connection.OpenAsync();
+    await using var command = connection.CreateCommand();
+    command.CommandText = """
+        SELECT s.Token, s.StoredName, s.CreatedByUserId,
+               COALESCE(u.DisplayName, u.Username, ''),
+               s.CreatedUtc, s.ExpiresUtc, s.RevokedUtc, s.LastAccessUtc, s.AccessCount
+        FROM DocumentShareLinks s
+        LEFT JOIN Users u ON u.Id = s.CreatedByUserId
+        WHERE s.StoredName = $storedName
+          AND s.RevokedUtc IS NULL
+          AND (s.ExpiresUtc IS NULL OR s.ExpiresUtc > $now)
+        ORDER BY s.CreatedUtc DESC
+        LIMIT 1;
+        """;
+    command.Parameters.AddWithValue("$storedName", storedName);
+    command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+
+    await using var reader = await command.ExecuteReaderAsync();
+    return await reader.ReadAsync() ? ReadDocumentShareLink(reader) : null;
+}
+
+static async Task<DocumentShareLinkRecord> CreateDocumentShareAsync(
+    string connectionString,
+    string storedName,
+    string? createdByUserId,
+    string? createdBy,
+    DateTimeOffset? expiresUtc)
+{
+    var token = NewDocumentShareToken();
+    var createdUtc = DateTimeOffset.UtcNow;
+
+    await using var connection = new SqliteConnection(connectionString);
+    await connection.OpenAsync();
+    await using var command = connection.CreateCommand();
+    command.CommandText = """
+        INSERT INTO DocumentShareLinks
+            (Token, StoredName, CreatedByUserId, CreatedUtc, ExpiresUtc, RevokedUtc, LastAccessUtc, AccessCount)
+        VALUES
+            ($token, $storedName, $createdByUserId, $createdUtc, $expiresUtc, NULL, NULL, 0);
+        """;
+    command.Parameters.AddWithValue("$token", token);
+    command.Parameters.AddWithValue("$storedName", storedName);
+    command.Parameters.AddWithValue("$createdByUserId", (object?)createdByUserId ?? DBNull.Value);
+    command.Parameters.AddWithValue("$createdUtc", createdUtc.ToString("O"));
+    command.Parameters.AddWithValue(
+        "$expiresUtc",
+        expiresUtc.HasValue ? (object)expiresUtc.Value.ToString("O") : DBNull.Value);
+    await command.ExecuteNonQueryAsync();
+
+    return new DocumentShareLinkRecord(
+        token,
+        storedName,
+        createdByUserId,
+        createdBy,
+        createdUtc,
+        expiresUtc,
+        null,
+        null,
+        0,
+        "Active");
+}
+
+static async Task<DocumentShareLinkRecord> RotateDocumentShareAsync(
+    string connectionString,
+    DocumentShareLinkRecord existing,
+    string? createdByUserId,
+    string? createdBy)
+{
+    var now = DateTimeOffset.UtcNow;
+    var token = NewDocumentShareToken();
+
+    await using var connection = new SqliteConnection(connectionString);
+    await connection.OpenAsync();
+    await using var transaction = await connection.BeginTransactionAsync();
+
+    await using (var revoke = connection.CreateCommand())
+    {
+        revoke.Transaction = (SqliteTransaction)transaction;
+        revoke.CommandText = """
+            UPDATE DocumentShareLinks
+            SET RevokedUtc = COALESCE(RevokedUtc, $now)
+            WHERE Token = $token;
+            """;
+        revoke.Parameters.AddWithValue("$now", now.ToString("O"));
+        revoke.Parameters.AddWithValue("$token", existing.Token);
+        await revoke.ExecuteNonQueryAsync();
+    }
+
+    await using (var insert = connection.CreateCommand())
+    {
+        insert.Transaction = (SqliteTransaction)transaction;
+        insert.CommandText = """
+            INSERT INTO DocumentShareLinks
+                (Token, StoredName, CreatedByUserId, CreatedUtc, ExpiresUtc, RevokedUtc, LastAccessUtc, AccessCount)
+            VALUES
+                ($token, $storedName, $createdByUserId, $createdUtc, $expiresUtc, NULL, NULL, 0);
+            """;
+        insert.Parameters.AddWithValue("$token", token);
+        insert.Parameters.AddWithValue("$storedName", existing.StoredName);
+        insert.Parameters.AddWithValue("$createdByUserId", (object?)createdByUserId ?? DBNull.Value);
+        insert.Parameters.AddWithValue("$createdUtc", now.ToString("O"));
+        insert.Parameters.AddWithValue(
+            "$expiresUtc",
+            existing.ExpiresUtc.HasValue ? (object)existing.ExpiresUtc.Value.ToString("O") : DBNull.Value);
+        await insert.ExecuteNonQueryAsync();
+    }
+
+    await transaction.CommitAsync();
+
+    return new DocumentShareLinkRecord(
+        token,
+        existing.StoredName,
+        createdByUserId,
+        createdBy,
+        now,
+        existing.ExpiresUtc,
+        null,
+        null,
+        0,
+        "Active");
+}
+
+static async Task RevokeDocumentShareAsync(string connectionString, string token)
+{
+    await using var connection = new SqliteConnection(connectionString);
+    await connection.OpenAsync();
+    await using var command = connection.CreateCommand();
+    command.CommandText = """
+        UPDATE DocumentShareLinks
+        SET RevokedUtc = COALESCE(RevokedUtc, $now)
+        WHERE Token = $token;
+        """;
+    command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+    command.Parameters.AddWithValue("$token", token);
+    await command.ExecuteNonQueryAsync();
+}
+
+static async Task RevokeDocumentSharesAsync(string connectionString, string storedName)
+{
+    await using var connection = new SqliteConnection(connectionString);
+    await connection.OpenAsync();
+    await using var command = connection.CreateCommand();
+    command.CommandText = """
+        UPDATE DocumentShareLinks
+        SET RevokedUtc = COALESCE(RevokedUtc, $now)
+        WHERE StoredName = $storedName;
+        """;
+    command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+    command.Parameters.AddWithValue("$storedName", storedName);
+    await command.ExecuteNonQueryAsync();
+}
+
+static async Task UpdateDocumentShareExpirationAsync(
+    string connectionString,
+    string token,
+    DateTimeOffset? expiresUtc)
+{
+    await using var connection = new SqliteConnection(connectionString);
+    await connection.OpenAsync();
+    await using var command = connection.CreateCommand();
+    command.CommandText = """
+        UPDATE DocumentShareLinks
+        SET ExpiresUtc = $expiresUtc
+        WHERE Token = $token
+          AND RevokedUtc IS NULL;
+        """;
+    command.Parameters.AddWithValue(
+        "$expiresUtc",
+        expiresUtc.HasValue ? (object)expiresUtc.Value.ToString("O") : DBNull.Value);
+    command.Parameters.AddWithValue("$token", token);
+    await command.ExecuteNonQueryAsync();
+}
+
+static async Task TouchDocumentShareAsync(string connectionString, string token)
+{
+    await using var connection = new SqliteConnection(connectionString);
+    await connection.OpenAsync();
+    await using var command = connection.CreateCommand();
+    command.CommandText = """
+        UPDATE DocumentShareLinks
+        SET LastAccessUtc = $now,
+            AccessCount = AccessCount + 1
+        WHERE Token = $token
+          AND RevokedUtc IS NULL
+          AND (ExpiresUtc IS NULL OR ExpiresUtc > $now);
+        """;
+    command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+    command.Parameters.AddWithValue("$token", token);
+    await command.ExecuteNonQueryAsync();
+}
+
+static async Task MigrateLegacyDocumentSharesAsync(string connectionString)
+{
+    using var stateDocument = JsonDocument.Parse(await ReadStateAsync(connectionString));
+    if (!stateDocument.RootElement.TryGetProperty("documents", out var documents)
+        || documents.ValueKind != JsonValueKind.Array)
+        return;
+
+    await using var connection = new SqliteConnection(connectionString);
+    await connection.OpenAsync();
+
+    foreach (var document in documents.EnumerateArray())
+    {
+        if (!document.TryGetProperty("shareToken", out var tokenElement)) continue;
+        var token = tokenElement.GetString();
+        if (string.IsNullOrWhiteSpace(token)
+            || !Regex.IsMatch(token, "^[A-Za-z0-9_-]{16,128}$"))
+            continue;
+
+        if (document.TryGetProperty("shareEnabled", out var enabledElement)
+            && enabledElement.ValueKind == JsonValueKind.False)
+            continue;
+
+        if (!document.TryGetProperty("storedName", out var storedElement)) continue;
+        var storedName = Path.GetFileName(storedElement.GetString());
+        if (string.IsNullOrWhiteSpace(storedName)) continue;
+
+        var createdUtc = DateTimeOffset.UtcNow;
+        if (document.TryGetProperty("addedAt", out var addedElement)
+            && DateTimeOffset.TryParse(addedElement.GetString(), out var addedUtc))
+            createdUtc = addedUtc;
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT OR IGNORE INTO DocumentShareLinks
+                (Token, StoredName, CreatedByUserId, CreatedUtc, ExpiresUtc, RevokedUtc, LastAccessUtc, AccessCount)
+            VALUES
+                ($token, $storedName, NULL, $createdUtc, NULL, NULL, NULL, 0);
+            """;
+        command.Parameters.AddWithValue("$token", token);
+        command.Parameters.AddWithValue("$storedName", storedName);
+        command.Parameters.AddWithValue("$createdUtc", createdUtc.ToString("O"));
+        await command.ExecuteNonQueryAsync();
+    }
+}
 static GarageLogUser? CurrentUser(HttpContext context) => context.Items.TryGetValue(GarageLogAuthConstants.CurrentUserItemKey, out var value) ? value as GarageLogUser : null;
 static bool IsAdministrator(GarageLogUser user) => string.Equals(user.Role, UserRoles.Administrator, StringComparison.Ordinal);
 static bool CanWrite(GarageLogUser user) => IsAdministrator(user) || string.Equals(user.AccessLevel, AccessLevels.ReadWrite, StringComparison.Ordinal);
@@ -1471,6 +1951,29 @@ sealed record UpdateStatusPayload(
     DateTimeOffset CheckedAtUtc,
     string? Error);
 sealed record UpdateCacheEntry(DateTimeOffset ExpiresUtc, UpdateStatusPayload Payload);
+sealed record DocumentShareCreateRequest(string? StoredName, int? ExpiresInDays);
+sealed record DocumentShareExpirationRequest(int? ExpiresInDays);
+sealed record DocumentShareLinkDto(
+    string Token,
+    string StoredName,
+    string? CreatedBy,
+    DateTimeOffset CreatedUtc,
+    DateTimeOffset? ExpiresUtc,
+    DateTimeOffset? RevokedUtc,
+    DateTimeOffset? LastAccessUtc,
+    int AccessCount,
+    string Status);
+sealed record DocumentShareLinkRecord(
+    string Token,
+    string StoredName,
+    string? CreatedByUserId,
+    string? CreatedBy,
+    DateTimeOffset CreatedUtc,
+    DateTimeOffset? ExpiresUtc,
+    DateTimeOffset? RevokedUtc,
+    DateTimeOffset? LastAccessUtc,
+    int AccessCount,
+    string Status);
 sealed record DocumentExportRequest(string[]? StoredNames,Dictionary<string,string>? FileNames);
 sealed record DocumentTextResult(string Text,string Method);
 sealed class DocumentOcrRequiredException : Exception
