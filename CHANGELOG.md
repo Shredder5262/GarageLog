@@ -1,7 +1,7 @@
 # Changelog
 
 
-## 0.7.11 - OBD device association and mileage proposals
+## 0.8.0 - OBD devices, mileage trust, and UI improvements
 
 - Added persistent GarageLog OBD device registration by device ID.
 - Added VIN-first vehicle matching with saved device-to-vehicle association fallback.
@@ -41,3 +41,4 @@
 ## 0.6.0–0.6.2
 
 - Added local authentication, user roles and permissions, report templates, notifications, and fuel/mileage reporting refinements.
+

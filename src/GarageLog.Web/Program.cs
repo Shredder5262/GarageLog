@@ -21,7 +21,7 @@ using Microsoft.AspNetCore.Identity;
 using UglyToad.PdfPig;
 using UglyToad.PdfPig.DocumentLayoutAnalysis.TextExtractor;
 
-const string GarageLogVersion = "0.7.10";
+const string GarageLogVersion = "0.8.0";
 var builder = WebApplication.CreateBuilder(args);
 
 builder.WebHost.UseUrls(
@@ -2103,4 +2103,5 @@ static class GarageLogSeed
 }
 """;
 }
+
 

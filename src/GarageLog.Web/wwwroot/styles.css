@@ -2612,7 +2612,7 @@
  .share-manager-meta,.share-manager-actions,.vehicle-add-type-grid,.vehicle-add-grid{grid-template-columns:1fr}
  .vehicle-add-grid .vehicle-edit-field.wide-field,.vehicle-add-grid .vehicle-edit-field.powertrain-field{grid-column:1}
 }
-/* GarageLog 0.7.10 - modal, vehicle onboarding, and share-management refinements */
+/* GarageLog 0.8.0 - modal, vehicle onboarding, and share-management refinements */
 
 /* Keep action/footer controls rectangular and consistent. */
 .vehicle-add-dialog .modal-actions > button,
@@ -3055,3 +3055,4 @@
 .document-coverage-date small{color:#94a3b8;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.03em}
 .document-coverage-date strong{color:#334155;font-size:11px;font-weight:650;white-space:nowrap}
 .document-coverage-empty{color:#94a3b8}
+
