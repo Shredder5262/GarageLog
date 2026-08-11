@@ -1,0 +1,25 @@
+GarageLog Server 0.7.11
+
+Integrated directly into this server source package:
+
+- Persistent OBD device registration keyed by DeviceId.
+- VIN-first vehicle matching when VIN is available.
+- Saved DeviceId -> VehicleId association fallback when VIN is unavailable.
+- VIN/device-pairing conflict detection; conflicting trips are not silently assigned.
+- GET /api/mobile/vehicles for GarageLog Mobile vehicle discovery.
+- GET /api/mobile/obd-devices/{deviceId} for current device association state.
+- POST /api/mobile/obd-devices/{deviceId}/associate for one-time mobile pairing.
+- GET /api/obd-devices for administrator Settings UI.
+- Administrator device-to-vehicle association controls in Settings.
+- Safe odometer proposals instead of automatic mileage overwrites.
+- Apply / Dismiss controls for odometer proposals in Settings.
+- Manual GarageLog odometer updates remain authoritative; older OBD proposals are marked covered.
+- POST /api/telemetry/trips now returns association and odometer proposal status.
+- ObdDevices and TelemetryTripAssociations SQLite tables are created automatically.
+
+Version updated from 0.7.10 to 0.7.11.
+
+Build verification note:
+The sandbox used to prepare this package does not have the .NET SDK installed,
+so a full dotnet build could not be executed here. settings.js passed Node's
+syntax check and all expected API/routes/tables were verified in the merged source.

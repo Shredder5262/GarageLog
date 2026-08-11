@@ -162,6 +162,7 @@ var connectionString = new SqliteConnectionStringBuilder
 }.ToString();
 
 await InitializeDatabaseAsync(connectionString);
+await ApiTokenFeature.InitializeAsync(connectionString);
 await MigrateLegacyDocumentSharesAsync(connectionString);
 var passwordHasher = app.Services.GetRequiredService<IPasswordHasher<GarageLogUser>>();
 var updateCacheGate = new SemaphoreSlim(1, 1);
@@ -278,6 +279,7 @@ app.Use(async (context, next) =>
     await next();
 });
 app.UseAuthorization();
+ApiTokenFeature.MapEndpoints(app, connectionString, GarageLogVersion);
 
 app.MapGet("/api/auth/session", async (HttpContext context) =>
 {
@@ -2101,3 +2103,4 @@ static class GarageLogSeed
 }
 """;
 }
+

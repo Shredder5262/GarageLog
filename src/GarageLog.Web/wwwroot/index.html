@@ -13,6 +13,7 @@
   <link rel="manifest" href="/site.webmanifest" />
   <link rel="stylesheet" href="/styles.css?v=0.7.10" />
   <link rel="stylesheet" href="/mobile.css?v=0.7.10" />
+  <link rel="stylesheet" href="/settings.css?v=0.7.11" />
 </head>
 <body>
   <div class="app-shell">
@@ -56,6 +57,7 @@
             </button>
             <div class="profile-menu" id="profileMenu" role="menu" hidden>
               <button type="button" data-profile-action="profile" role="menuitem"><span data-profile-icon="user"></span><span>My Profile</span></button>
+              <button type="button" data-profile-action="settings" role="menuitem"><span data-profile-icon="wrench"></span><span>Settings</span></button>
               <button type="button" data-profile-action="about" role="menuitem"><span data-profile-icon="help"></span><span>Help &amp; About</span></button>
               <div class="profile-menu-divider"></div>
               <button type="button" data-profile-action="logout" role="menuitem"><span data-profile-icon="logout"></span><span>Log out</span></button>
@@ -163,7 +165,9 @@
   </dialog>
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="/settings.js?v=0.7.11"></script>
   <script src="/app.js?v=0.7.10"></script>
   <script src="/mobile.js?v=0.7.10"></script>
 </body>
 </html>
+

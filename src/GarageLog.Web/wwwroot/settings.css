@@ -1,0 +1,650 @@
+.settings-page{
+  display:grid;
+  gap:18px;
+}
+
+.settings-section{
+  padding:22px;
+  display:grid;
+  gap:18px;
+}
+
+.settings-section-heading{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:20px;
+}
+
+.settings-section-heading h2{
+  margin:3px 0 5px;
+}
+
+.settings-section-heading p{
+  margin:0;
+  color:var(--muted,#687386);
+  max-width:760px;
+}
+
+.settings-security-note{
+  display:flex;
+  align-items:flex-start;
+  gap:10px;
+  padding:12px 14px;
+  border:1px solid #dfe6ef;
+  border-radius:10px;
+  background:#f7f9fc;
+  color:#566274;
+  font-size:13px;
+}
+
+.settings-security-note svg{
+  width:18px;
+  height:18px;
+  flex:0 0 auto;
+}
+
+.settings-security-note.warning{
+  background:#fff8ea;
+  border-color:#eed7a8;
+  color:#795b21;
+}
+
+.settings-token-list,
+.settings-share-list{
+  display:grid;
+  gap:12px;
+}
+
+.settings-token-row,
+.settings-share-row{
+  border:1px solid #e2e7ee;
+  border-radius:12px;
+  background:#fff;
+  padding:15px;
+}
+
+.settings-token-row{
+  display:grid;
+  grid-template-columns:minmax(220px,1.2fr) minmax(360px,1.7fr) auto;
+  gap:18px;
+  align-items:center;
+}
+
+.settings-share-row{
+  display:grid;
+  grid-template-columns:minmax(240px,1.1fr) minmax(360px,1.6fr);
+  gap:18px;
+  align-items:center;
+}
+
+.settings-token-main{
+  display:grid;
+  gap:7px;
+}
+
+.settings-token-main code{
+  width:max-content;
+  max-width:100%;
+  padding:5px 8px;
+  border-radius:7px;
+  background:#f3f5f8;
+  color:#344054;
+  overflow-wrap:anywhere;
+}
+
+.settings-token-title{
+  display:flex;
+  align-items:center;
+  gap:9px;
+  flex-wrap:wrap;
+}
+
+.settings-status{
+  display:inline-flex;
+  align-items:center;
+  padding:3px 8px;
+  border-radius:999px;
+  font-size:11px;
+  font-weight:700;
+  letter-spacing:.03em;
+  text-transform:uppercase;
+  background:#eef1f5;
+  color:#5d6673;
+}
+
+.settings-status.active{background:#e9f7ef;color:#237246}
+.settings-status.revoked{background:#fceceb;color:#9f3028}
+.settings-status.expired{background:#fff4df;color:#98620f}
+
+.settings-scope-list{
+  display:flex;
+  gap:6px;
+  flex-wrap:wrap;
+}
+
+.settings-scope-list span{
+  padding:4px 7px;
+  border-radius:7px;
+  background:#edf2f8;
+  color:#506176;
+  font-size:11px;
+}
+
+.settings-meta{
+  margin:0;
+  display:grid;
+  grid-template-columns:repeat(2,minmax(130px,1fr));
+  gap:9px 16px;
+}
+
+.settings-meta.compact{
+  grid-template-columns:repeat(3,minmax(110px,1fr));
+}
+
+.settings-meta div{
+  min-width:0;
+}
+
+.settings-meta dt{
+  color:#8a94a3;
+  font-size:11px;
+  text-transform:uppercase;
+  letter-spacing:.04em;
+}
+
+.settings-meta dd{
+  margin:2px 0 0;
+  font-size:13px;
+  color:#303846;
+  overflow-wrap:anywhere;
+}
+
+.settings-row-actions{
+  display:flex;
+  gap:8px;
+  justify-content:flex-end;
+  flex-wrap:wrap;
+}
+
+.settings-summary-grid{
+  display:grid;
+  grid-template-columns:repeat(3,minmax(120px,1fr));
+  gap:10px;
+}
+
+.settings-summary-grid>div{
+  border:1px solid #e2e7ee;
+  border-radius:10px;
+  padding:13px 15px;
+  background:#fafbfc;
+}
+
+.settings-summary-grid strong{
+  display:block;
+  font-size:24px;
+}
+
+.settings-summary-grid span{
+  display:block;
+  margin-top:2px;
+  color:#7a8492;
+  font-size:12px;
+}
+
+.settings-empty{
+  padding:24px;
+  border:1px dashed #d7dde6;
+  border-radius:12px;
+  text-align:center;
+  background:#fafbfc;
+}
+
+.settings-empty strong{
+  display:block;
+  margin-bottom:4px;
+}
+
+.settings-empty p,
+.settings-more-note{
+  margin:0;
+  color:#7a8492;
+  font-size:13px;
+}
+
+.settings-token-form{
+  display:grid;
+  gap:15px;
+  padding:4px 2px 8px;
+}
+
+.settings-token-form label{
+  display:grid;
+  gap:6px;
+}
+
+.settings-token-form fieldset{
+  border:1px solid #dfe5ed;
+  border-radius:10px;
+  padding:12px;
+  display:grid;
+  gap:8px;
+}
+
+.settings-check{
+  display:flex!important;
+  grid-template-columns:none!important;
+  align-items:center;
+  gap:10px!important;
+  padding:8px;
+  border-radius:8px;
+}
+
+.settings-check:hover{
+  background:#f7f9fb;
+}
+
+.settings-check input{
+  width:auto;
+  margin:0;
+}
+
+.settings-check span{
+  display:grid;
+}
+
+.settings-check small{
+  color:#8a94a3;
+}
+
+.api-token-reveal{
+  display:grid;
+  gap:14px;
+  padding:6px 0;
+}
+
+.api-token-reveal code{
+  display:block;
+  padding:14px;
+  border:1px solid #dfe5ed;
+  border-radius:10px;
+  background:#f6f8fa;
+  overflow-wrap:anywhere;
+  user-select:all;
+}
+
+@media(max-width:1000px){
+  .settings-token-row,
+  .settings-share-row{
+    grid-template-columns:1fr;
+  }
+
+  .settings-row-actions{
+    justify-content:flex-start;
+  }
+}
+
+@media(max-width:680px){
+  .settings-section-heading{
+    flex-direction:column;
+  }
+
+  .settings-meta,
+  .settings-meta.compact,
+  .settings-summary-grid{
+    grid-template-columns:1fr;
+  }
+}
+
+/* GarageLog Settings UI polish v2 */
+.settings-section-heading > button,
+.settings-row-actions button,
+.modal-actions button {
+  width: auto !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  height: 40px !important;
+  min-height: 40px !important;
+  padding: 0 14px !important;
+  border-radius: 9px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 7px !important;
+  line-height: 1 !important;
+  white-space: nowrap !important;
+  flex: 0 0 auto !important;
+}
+
+.settings-section-heading > button svg,
+.settings-row-actions button svg,
+.modal-actions button svg {
+  width: 16px !important;
+  height: 16px !important;
+  flex: 0 0 16px !important;
+}
+
+.settings-section-heading {
+  align-items: center !important;
+}
+
+.settings-section-heading > div {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.settings-token-row {
+  grid-template-columns:
+    minmax(260px, 1.45fr)
+    minmax(170px, .8fr)
+    minmax(170px, .8fr)
+    auto !important;
+  gap: 20px !important;
+}
+
+.settings-token-row .settings-meta {
+  display: contents;
+}
+
+.settings-token-row .settings-meta > div {
+  align-self: center;
+}
+
+.settings-token-row .settings-meta > div:nth-child(1),
+.settings-token-row .settings-meta > div:nth-child(3) {
+  grid-column: 2;
+}
+
+.settings-token-row .settings-meta > div:nth-child(2),
+.settings-token-row .settings-meta > div:nth-child(4) {
+  grid-column: 3;
+}
+
+.settings-token-row .settings-meta > div:nth-child(1),
+.settings-token-row .settings-meta > div:nth-child(2) {
+  grid-row: 1;
+}
+
+.settings-token-row .settings-meta > div:nth-child(3),
+.settings-token-row .settings-meta > div:nth-child(4) {
+  grid-row: 2;
+}
+
+.settings-token-row .settings-token-main {
+  grid-row: 1 / span 2;
+}
+
+.settings-token-row .settings-row-actions {
+  grid-column: 4;
+  grid-row: 1 / span 2;
+  align-self: center;
+}
+
+.settings-row-actions button {
+  height: 38px !important;
+  min-height: 38px !important;
+  padding-inline: 13px !important;
+}
+
+.settings-summary-grid > div {
+  padding: 14px 16px !important;
+  min-height: 72px;
+}
+
+.settings-empty {
+  padding: 22px 18px !important;
+}
+
+/* Token creator */
+.api-token-dialog {
+  width: min(560px, calc(100vw - 32px)) !important;
+  max-width: 560px !important;
+  border-radius: 16px !important;
+  overflow: hidden !important;
+}
+
+.api-token-dialog .modal-header,
+.api-token-created-dialog .modal-header {
+  padding: 18px 20px 15px !important;
+}
+
+.api-token-dialog .settings-token-form {
+  padding: 14px 20px 16px !important;
+  gap: 14px !important;
+}
+
+.api-token-dialog .settings-token-form > label {
+  gap: 6px !important;
+}
+
+.api-token-dialog .settings-token-form input[type="text"],
+.api-token-dialog .settings-token-form input[type="datetime-local"],
+.api-token-dialog .settings-token-form select,
+.api-token-dialog .settings-token-form input:not([type]) {
+  width: 100% !important;
+  min-height: 40px !important;
+  height: 40px !important;
+  padding: 7px 10px !important;
+  border-radius: 8px !important;
+  box-sizing: border-box !important;
+}
+
+.api-token-dialog .settings-token-form fieldset {
+  margin: 0 !important;
+  padding: 10px 12px 8px !important;
+  border-radius: 10px !important;
+}
+
+.api-token-dialog .settings-check {
+  min-height: 48px !important;
+  padding: 7px 8px !important;
+}
+
+.api-token-dialog .settings-check strong {
+  font-size: 14px;
+}
+
+.api-token-dialog .settings-check small {
+  margin-top: 2px;
+  font-size: 11px;
+}
+
+/* A styled label's display:grid was overriding the native hidden attribute. */
+.api-token-dialog [hidden] {
+  display: none !important;
+}
+
+.api-token-dialog .modal-actions,
+.api-token-created-dialog .modal-actions {
+  padding: 14px 20px !important;
+  gap: 10px !important;
+  justify-content: flex-end !important;
+}
+
+.api-token-dialog .modal-actions button,
+.api-token-created-dialog .modal-actions button {
+  height: 40px !important;
+  min-height: 40px !important;
+  padding-inline: 16px !important;
+}
+
+/* Token reveal */
+.api-token-created-dialog {
+  width: min(560px, calc(100vw - 32px)) !important;
+  max-width: 560px !important;
+  border-radius: 16px !important;
+  overflow: hidden !important;
+}
+
+.api-token-created-dialog .api-token-reveal {
+  padding: 14px 20px 6px !important;
+}
+
+.api-token-created-dialog .api-token-reveal code {
+  font-size: 13px !important;
+  line-height: 1.4 !important;
+  padding: 12px !important;
+}
+
+.api-token-created-dialog .settings-security-note {
+  margin: 0 20px 6px !important;
+}
+
+@media (max-width: 1050px) {
+  .settings-token-row {
+    grid-template-columns: 1fr 1fr !important;
+  }
+
+  .settings-token-row .settings-token-main {
+    grid-column: 1 / -1;
+    grid-row: auto;
+  }
+
+  .settings-token-row .settings-meta {
+    display: grid;
+    grid-column: 1 / -1;
+    grid-template-columns: repeat(2, minmax(150px, 1fr));
+  }
+
+  .settings-token-row .settings-meta > div {
+    grid-column: auto !important;
+    grid-row: auto !important;
+  }
+
+  .settings-token-row .settings-row-actions {
+    grid-column: 1 / -1;
+    grid-row: auto;
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 680px) {
+  .settings-section-heading {
+    align-items: stretch !important;
+  }
+
+  .settings-section-heading > button {
+    align-self: flex-start;
+  }
+
+  .settings-token-row {
+    grid-template-columns: 1fr !important;
+  }
+
+  .settings-token-row .settings-meta {
+    grid-template-columns: 1fr;
+  }
+
+  .api-token-dialog .modal-header,
+  .api-token-created-dialog .modal-header,
+  .api-token-dialog .settings-token-form,
+  .api-token-dialog .modal-actions,
+  .api-token-created-dialog .modal-actions {
+    padding-left: 16px !important;
+    padding-right: 16px !important;
+  }
+}
+/* End GarageLog Settings UI polish v2 */
+
+/* API token one-time reveal: selectable even when browser clipboard APIs are blocked. */
+.api-token-reveal .api-token-value {
+  box-sizing: border-box;
+  display: block;
+  width: 100%;
+  min-height: 72px;
+  resize: none;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 0.92rem;
+  line-height: 1.45;
+  padding: 12px 14px;
+  border: 1px solid var(--border, #d6d9df);
+  border-radius: 8px;
+  background: var(--surface, #fff);
+  color: inherit;
+  cursor: text;
+}
+
+.api-token-reveal .api-token-value:focus {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
+
+/* GarageLog OBD device association and safe odometer proposals */
+.settings-subheading{margin:18px 0 8px;font-size:15px}
+.settings-obd-list,.settings-odometer-list{display:grid;gap:10px}
+.settings-obd-row,.settings-odometer-row{display:grid;grid-template-columns:minmax(220px,1.2fr) minmax(260px,1fr) auto;gap:16px;align-items:center;padding:14px;border:1px solid var(--line,#dfe3ea);border-radius:12px;background:var(--card,#fff)}
+.settings-obd-main,.settings-obd-status{display:grid;gap:4px}.settings-obd-main code{width:max-content;max-width:100%;overflow:hidden;text-overflow:ellipsis}.settings-obd-association{display:flex;gap:8px;align-items:end}.settings-obd-association label{display:grid;gap:5px;flex:1}.settings-obd-association select{min-height:40px}
+.settings-odometer-values{display:flex;gap:18px}.settings-odometer-values span{display:grid;gap:2px}.settings-odometer-values small,.settings-obd-row small,.settings-odometer-row small{color:var(--muted,#667085)}
+@media(max-width:900px){.settings-obd-row,.settings-odometer-row{grid-template-columns:1fr}.settings-obd-association{align-items:stretch;flex-direction:column}.settings-odometer-values{justify-content:flex-start}}
+
+/* OBD trust controls */
+.settings-obd-controls{
+  display:grid;
+  gap:9px;
+  min-width:280px;
+}
+.settings-obd-vehicle-name{
+  font-size:12px;
+  font-weight:700;
+  color:var(--muted,#667085);
+}
+.settings-toggle-row{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:16px;
+  padding:10px 12px;
+  border:1px solid var(--line,#dfe3ea);
+  border-radius:10px;
+  background:#f8fafc;
+  cursor:pointer;
+}
+.settings-toggle-row > span{
+  display:grid;
+  gap:2px;
+}
+.settings-toggle-row small{
+  color:var(--muted,#667085);
+  line-height:1.3;
+}
+.settings-toggle-row.disabled{
+  opacity:.58;
+  cursor:not-allowed;
+}
+.settings-toggle-row input[type="checkbox"]{
+  width:42px;
+  height:22px;
+  flex:0 0 auto;
+  cursor:pointer;
+  accent-color:#2563eb;
+}
+.settings-toggle-row input[type="checkbox"]:disabled{
+  cursor:not-allowed;
+}
+.settings-confirm-dialog{
+  width:min(520px,calc(100vw - 28px));
+  padding:0;
+  border:0;
+  border-radius:16px;
+  box-shadow:0 24px 70px rgba(15,23,42,.28);
+}
+.settings-confirm-dialog .modal-header{
+  padding:22px 22px 10px;
+}
+.settings-confirm-dialog .modal-header p{
+  margin-bottom:0;
+  max-width:440px;
+}
+.settings-confirm-dialog .modal-actions{
+  display:flex;
+  justify-content:flex-end;
+  gap:10px;
+  padding:16px 22px 22px;
+}
+
+@media(max-width:900px){
+  .settings-obd-controls{min-width:0}
+}

@@ -2995,3 +2995,63 @@
     width:100% !important;
   }
 }
+
+/* Sortable list headers — Reminders, Documents, Expenses, Maintenance */
+.column-sort-button{
+  appearance:none;
+  border:0;
+  background:transparent;
+  color:inherit;
+  font:inherit;
+  font-weight:inherit;
+  letter-spacing:inherit;
+  padding:0;
+  margin:0;
+  display:inline-flex;
+  align-items:center;
+  gap:5px;
+  cursor:pointer;
+  white-space:nowrap;
+  text-align:left;
+}
+.column-sort-button:hover,
+.column-sort-button:focus-visible{color:#0f172a}
+.column-sort-button:focus-visible{outline:2px solid #93c5fd;outline-offset:3px;border-radius:4px}
+.column-sort-glyph{color:#94a3b8;font-size:11px;line-height:1;font-weight:800}
+.column-sort-button.active .column-sort-glyph{color:#2563eb}
+.maintenance-list-head .column-sort-button{font-size:inherit;font-weight:inherit;color:inherit}
+.document-coverage-date{display:grid;gap:3px;min-width:118px;white-space:normal}
+.document-coverage-date>span{display:flex;gap:6px;align-items:baseline}
+.document-coverage-date small{color:#94a3b8;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.03em}
+.document-coverage-date strong{color:#334155;font-size:11px;font-weight:650;white-space:nowrap}
+.document-coverage-empty{color:#94a3b8}
+
+/* Sortable list headers — Reminders, Documents, Expenses, Maintenance */
+.column-sort-button{
+  appearance:none;
+  border:0;
+  background:transparent;
+  color:inherit;
+  font:inherit;
+  font-weight:inherit;
+  letter-spacing:inherit;
+  padding:0;
+  margin:0;
+  display:inline-flex;
+  align-items:center;
+  gap:5px;
+  cursor:pointer;
+  white-space:nowrap;
+  text-align:left;
+}
+.column-sort-button:hover,
+.column-sort-button:focus-visible{color:#0f172a}
+.column-sort-button:focus-visible{outline:2px solid #93c5fd;outline-offset:3px;border-radius:4px}
+.column-sort-glyph{color:#94a3b8;font-size:11px;line-height:1;font-weight:800}
+.column-sort-button.active .column-sort-glyph{color:#2563eb}
+.maintenance-list-head .column-sort-button{font-size:inherit;font-weight:inherit;color:inherit}
+.document-coverage-date{display:grid;gap:3px;min-width:118px;white-space:normal}
+.document-coverage-date>span{display:flex;gap:6px;align-items:baseline}
+.document-coverage-date small{color:#94a3b8;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.03em}
+.document-coverage-date strong{color:#334155;font-size:11px;font-weight:650;white-space:nowrap}
+.document-coverage-empty{color:#94a3b8}

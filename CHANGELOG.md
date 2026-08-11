@@ -1,5 +1,16 @@
 # Changelog
 
+
+## 0.7.11 - OBD device association and mileage proposals
+
+- Added persistent GarageLog OBD device registration by device ID.
+- Added VIN-first vehicle matching with saved device-to-vehicle association fallback.
+- Added conflict handling when a device pairing and detected VIN disagree.
+- Added safe odometer proposals from telemetry instead of automatic mileage overwrite.
+- Added administrator controls in Settings for OBD device associations and odometer proposals.
+- Added mobile API endpoints for vehicle discovery and OBD device association.
+- Telemetry trip uploads now return vehicle-association and odometer-proposal status.
+
 ## 0.7.0 - Docker release and security hardening
 
 - Added a multi-stage Docker build with OCR, PDF, Office-preview, and QR dependencies.

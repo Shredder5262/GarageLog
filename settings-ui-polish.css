@@ -1,0 +1,248 @@
+/* GarageLog Settings UI polish v2 */
+.settings-section-heading > button,
+.settings-row-actions button,
+.modal-actions button {
+  width: auto !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  height: 40px !important;
+  min-height: 40px !important;
+  padding: 0 14px !important;
+  border-radius: 9px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 7px !important;
+  line-height: 1 !important;
+  white-space: nowrap !important;
+  flex: 0 0 auto !important;
+}
+
+.settings-section-heading > button svg,
+.settings-row-actions button svg,
+.modal-actions button svg {
+  width: 16px !important;
+  height: 16px !important;
+  flex: 0 0 16px !important;
+}
+
+.settings-section-heading {
+  align-items: center !important;
+}
+
+.settings-section-heading > div {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.settings-token-row {
+  grid-template-columns:
+    minmax(260px, 1.45fr)
+    minmax(170px, .8fr)
+    minmax(170px, .8fr)
+    auto !important;
+  gap: 20px !important;
+}
+
+.settings-token-row .settings-meta {
+  display: contents;
+}
+
+.settings-token-row .settings-meta > div {
+  align-self: center;
+}
+
+.settings-token-row .settings-meta > div:nth-child(1),
+.settings-token-row .settings-meta > div:nth-child(3) {
+  grid-column: 2;
+}
+
+.settings-token-row .settings-meta > div:nth-child(2),
+.settings-token-row .settings-meta > div:nth-child(4) {
+  grid-column: 3;
+}
+
+.settings-token-row .settings-meta > div:nth-child(1),
+.settings-token-row .settings-meta > div:nth-child(2) {
+  grid-row: 1;
+}
+
+.settings-token-row .settings-meta > div:nth-child(3),
+.settings-token-row .settings-meta > div:nth-child(4) {
+  grid-row: 2;
+}
+
+.settings-token-row .settings-token-main {
+  grid-row: 1 / span 2;
+}
+
+.settings-token-row .settings-row-actions {
+  grid-column: 4;
+  grid-row: 1 / span 2;
+  align-self: center;
+}
+
+.settings-row-actions button {
+  height: 38px !important;
+  min-height: 38px !important;
+  padding-inline: 13px !important;
+}
+
+.settings-summary-grid > div {
+  padding: 14px 16px !important;
+  min-height: 72px;
+}
+
+.settings-empty {
+  padding: 22px 18px !important;
+}
+
+/* Token creator */
+.api-token-dialog {
+  width: min(560px, calc(100vw - 32px)) !important;
+  max-width: 560px !important;
+  border-radius: 16px !important;
+  overflow: hidden !important;
+}
+
+.api-token-dialog .modal-header,
+.api-token-created-dialog .modal-header {
+  padding: 18px 20px 15px !important;
+}
+
+.api-token-dialog .settings-token-form {
+  padding: 14px 20px 16px !important;
+  gap: 14px !important;
+}
+
+.api-token-dialog .settings-token-form > label {
+  gap: 6px !important;
+}
+
+.api-token-dialog .settings-token-form input[type="text"],
+.api-token-dialog .settings-token-form input[type="datetime-local"],
+.api-token-dialog .settings-token-form select,
+.api-token-dialog .settings-token-form input:not([type]) {
+  width: 100% !important;
+  min-height: 40px !important;
+  height: 40px !important;
+  padding: 7px 10px !important;
+  border-radius: 8px !important;
+  box-sizing: border-box !important;
+}
+
+.api-token-dialog .settings-token-form fieldset {
+  margin: 0 !important;
+  padding: 10px 12px 8px !important;
+  border-radius: 10px !important;
+}
+
+.api-token-dialog .settings-check {
+  min-height: 48px !important;
+  padding: 7px 8px !important;
+}
+
+.api-token-dialog .settings-check strong {
+  font-size: 14px;
+}
+
+.api-token-dialog .settings-check small {
+  margin-top: 2px;
+  font-size: 11px;
+}
+
+/* A styled label's display:grid was overriding the native hidden attribute. */
+.api-token-dialog [hidden] {
+  display: none !important;
+}
+
+.api-token-dialog .modal-actions,
+.api-token-created-dialog .modal-actions {
+  padding: 14px 20px !important;
+  gap: 10px !important;
+  justify-content: flex-end !important;
+}
+
+.api-token-dialog .modal-actions button,
+.api-token-created-dialog .modal-actions button {
+  height: 40px !important;
+  min-height: 40px !important;
+  padding-inline: 16px !important;
+}
+
+/* Token reveal */
+.api-token-created-dialog {
+  width: min(560px, calc(100vw - 32px)) !important;
+  max-width: 560px !important;
+  border-radius: 16px !important;
+  overflow: hidden !important;
+}
+
+.api-token-created-dialog .api-token-reveal {
+  padding: 14px 20px 6px !important;
+}
+
+.api-token-created-dialog .api-token-reveal code {
+  font-size: 13px !important;
+  line-height: 1.4 !important;
+  padding: 12px !important;
+}
+
+.api-token-created-dialog .settings-security-note {
+  margin: 0 20px 6px !important;
+}
+
+@media (max-width: 1050px) {
+  .settings-token-row {
+    grid-template-columns: 1fr 1fr !important;
+  }
+
+  .settings-token-row .settings-token-main {
+    grid-column: 1 / -1;
+    grid-row: auto;
+  }
+
+  .settings-token-row .settings-meta {
+    display: grid;
+    grid-column: 1 / -1;
+    grid-template-columns: repeat(2, minmax(150px, 1fr));
+  }
+
+  .settings-token-row .settings-meta > div {
+    grid-column: auto !important;
+    grid-row: auto !important;
+  }
+
+  .settings-token-row .settings-row-actions {
+    grid-column: 1 / -1;
+    grid-row: auto;
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 680px) {
+  .settings-section-heading {
+    align-items: stretch !important;
+  }
+
+  .settings-section-heading > button {
+    align-self: flex-start;
+  }
+
+  .settings-token-row {
+    grid-template-columns: 1fr !important;
+  }
+
+  .settings-token-row .settings-meta {
+    grid-template-columns: 1fr;
+  }
+
+  .api-token-dialog .modal-header,
+  .api-token-created-dialog .modal-header,
+  .api-token-dialog .settings-token-form,
+  .api-token-dialog .modal-actions,
+  .api-token-created-dialog .modal-actions {
+    padding-left: 16px !important;
+    padding-right: 16px !important;
+  }
+}
