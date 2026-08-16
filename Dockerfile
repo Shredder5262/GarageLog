@@ -1,6 +1,7 @@
 # syntax=docker/dockerfile:1.7
 FROM mcr.microsoft.com/dotnet/sdk:8.0-bookworm-slim AS build
 WORKDIR /src
+COPY Directory.Build.props VERSION ./
 COPY src/GarageLog.Web/GarageLog.Web.csproj src/GarageLog.Web/
 RUN dotnet restore src/GarageLog.Web/GarageLog.Web.csproj
 COPY src/GarageLog.Web/ src/GarageLog.Web/

@@ -38,6 +38,7 @@ let managedUserEditorId=null;
 let managedUserEditorOpen=false;
 let firstRunSetupState=null;
 let availableUpdate=null;
+let applicationVersion='';
 const listSortState={
  maintenance:{key:null,direction:'asc'},
  expenses:{key:'date',direction:'desc'},
@@ -69,6 +70,19 @@ window.fetch=function(input,init={}){
  }
  return nativeGarageLogFetch(input,init);
 };
+
+async function getApplicationVersion(){
+ if(applicationVersion)return applicationVersion;
+ try{
+  const response=await fetch('/healthz',{cache:'no-store'});
+  if(response.ok){
+   const payload=await response.json();
+   const version=String(payload?.version||'').trim();
+   if(version)applicationVersion=version
+  }
+ }catch(error){console.warn('Unable to read GarageLog runtime version.',error)}
+ return applicationVersion||'Unknown'
+}
 
 const REPORT_TEMPLATES=[
  {id:'ownership-cost',icon:'dollar',name:'Cost & Spending',description:'Transaction-date spending totals, category shares, and expense detail for the selected period.',sources:['Expenses','Transaction dates']},
@@ -2597,7 +2611,7 @@ window.removeVehicleImage=async function(vehicleId=state.activeVehicleId){const 
 function closeRecordModal(){const modal=document.getElementById('modal');clearDocumentUploadPreview();if(modal?.open)modal.close();modal?.classList.remove('document-upload-dialog');editing=null;const form=document.getElementById('modalForm');if(form)form.reset()}
 
 function setProfileMenu(open){const menu=document.getElementById('profileMenu'),trigger=document.getElementById('profileTrigger');if(!menu||!trigger)return;menu.hidden=!open;trigger.setAttribute('aria-expanded',String(open));trigger.classList.toggle('open',open)}
-function openInfoModal(kind){
+async function openInfoModal(kind){
  setProfileMenu(false);
  const modal=document.getElementById('infoModal'),title=document.getElementById('infoModalTitle'),subtitle=document.getElementById('infoModalSubtitle'),body=document.getElementById('infoModalBody'),primary=document.getElementById('infoModalPrimary'),secondary=document.getElementById('infoModalSecondary');
  infoModalAction=null;primary.hidden=true;primary.textContent='Continue';secondary.textContent='Close';
@@ -2605,8 +2619,9 @@ function openInfoModal(kind){
    title.textContent='My Profile';subtitle.textContent='Local GarageLog account information.';
    body.innerHTML=`<div class="profile-info-card"><span class="profile-info-avatar">L</span><div><strong>Local User</strong><small>Private, self-hosted account</small></div></div><dl class="profile-detail-list"><div><dt>Storage mode</dt><dd>Local GarageLog instance</dd></div><div><dt>Active vehicle</dt><dd>${esc(vehicleFullName())}</dd></div><div><dt>Vehicles</dt><dd>${state.vehicles.length}</dd></div><div><dt>Data sharing</dt><dd>External sharing disabled</dd></div></dl>`;
  }else if(kind==='about'){
+   const runtimeVersion=await getApplicationVersion();
    title.textContent='Help & About';subtitle.textContent='GarageLog local-first vehicle records.';
-   body.innerHTML=`<div class="about-logo">${svg('shield')}<div><strong>GarageLog 0.8.0</strong><small>Local-first self-hosted release</small></div></div><div class="info-section"><h4>About</h4><p>GarageLog keeps vehicle, maintenance, expense, reminder, and document records on your own instance.</p></div><div class="info-section"><h4>Help</h4><p>Use Garage for vehicle details, Maintenance for service intervals, Documents for local files, and Reminders for date- or mileage-based rules.</p></div><div class="info-callout">GarageLog authentication is local to this self-hosted instance. Account records and vehicle data remain in the GarageLog data folder.</div>`;
+   body.innerHTML=`<div class="about-logo">${svg('shield')}<div><strong>GarageLog ${esc(runtimeVersion)}</strong><small>Local-first self-hosted release</small></div></div><div class="info-section"><h4>About</h4><p>GarageLog keeps vehicle, maintenance, expense, reminder, and document records on your own instance.</p></div><div class="info-section"><h4>Help</h4><p>Use Garage for vehicle details, Maintenance for service intervals, Documents for local files, and Reminders for date- or mileage-based rules.</p></div><div class="info-callout">GarageLog authentication is local to this self-hosted instance. Account records and vehicle data remain in the GarageLog data folder.</div>`;
  }else{
    title.textContent='Log out';subtitle.textContent='End this local browser session.';
    body.innerHTML=`<div class="logout-warning">${svg('logout')}<div><strong>Log out of GarageLog?</strong><p>Your local records will remain saved. This only closes the current interface session.</p></div></div>`;

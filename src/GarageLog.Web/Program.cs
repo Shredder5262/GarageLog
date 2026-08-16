@@ -5,6 +5,7 @@ using System.Security.Cryptography;
 using System.Text.Json.Nodes;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Reflection;
 using System.Threading.RateLimiting;
 using System.Text;
 using System.Text.Json;
@@ -21,7 +22,16 @@ using Microsoft.AspNetCore.Identity;
 using UglyToad.PdfPig;
 using UglyToad.PdfPig.DocumentLayoutAnalysis.TextExtractor;
 
-const string GarageLogVersion = "0.8.2";
+var garageLogAssembly = Assembly.GetExecutingAssembly();
+var garageLogInformationalVersion = garageLogAssembly
+    .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
+    .InformationalVersion;
+var garageLogMetadataSeparator = garageLogInformationalVersion?.IndexOf('+') ?? -1;
+var GarageLogVersion = !string.IsNullOrWhiteSpace(garageLogInformationalVersion)
+    ? (garageLogMetadataSeparator >= 0
+        ? garageLogInformationalVersion![..garageLogMetadataSeparator]
+        : garageLogInformationalVersion!)
+    : garageLogAssembly.GetName().Version?.ToString(3) ?? "0.0.0";
 var builder = WebApplication.CreateBuilder(args);
 
 builder.WebHost.UseUrls(

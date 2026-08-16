@@ -1,0 +1,19 @@
+GarageLog version-alignment patch
+=================================
+
+This patch makes the repository-root VERSION file the only manually maintained
+application version.
+
+Files included:
+- VERSION (set to 0.8.3 for the next release)
+- Directory.Build.props (reads VERSION into the .NET build)
+- GarageLog.Web.csproj (removes duplicate Version/AssemblyVersion/FileVersion)
+- Program.cs (reads compiled assembly version at runtime)
+- app.js (Help & About reads /healthz for the running version)
+- index.html (removes manually maintained ?v= version query strings)
+- Dockerfile (copies VERSION + Directory.Build.props into the build stage)
+- .github/workflows/docker-publish.yml (blocks tag/version mismatches)
+- RELEASE-CHECKLIST.md (documents the new process)
+
+For future releases, change only VERSION, commit it, then create the matching vX.Y.Z tag.
+The publish workflow will reject a mismatched tag.

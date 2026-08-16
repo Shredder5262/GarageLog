@@ -1,0 +1,12 @@
+<Project>
+  <!--
+    GarageLog versioning has one source of truth: the repository-root VERSION file.
+    Do not duplicate the application version in project files, C# source, or JavaScript.
+  -->
+  <PropertyGroup>
+    <GarageLogVersionFile>$(MSBuildThisFileDirectory)VERSION</GarageLogVersionFile>
+    <GarageLogVersionRaw>$([System.IO.File]::ReadAllText('$(GarageLogVersionFile)'))</GarageLogVersionRaw>
+    <GarageLogVersion>$(GarageLogVersionRaw.Trim())</GarageLogVersion>
+    <Version>$(GarageLogVersion)</Version>
+  </PropertyGroup>
+</Project>
