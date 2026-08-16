@@ -230,16 +230,53 @@ function settingsPage(){
   const activeShares=settingsShares.filter(share=>share.status==='Active').length;
   const expiredShares=settingsShares.filter(share=>share.status==='Expired').length;
   const revokedShares=settingsShares.filter(share=>share.status==='Revoked').length;
+  const appearance=appearanceSettings();
+  const appearanceDisabled=isAdministrator()?'':'disabled';
 
   return `<div class="settings-page">
     <div class="account-page-header">
       <div>
         <span class="account-eyebrow">GARAGELOG SETTINGS</span>
         <h1>Settings</h1>
-        <p>Manage integrations, API access, and externally shared document links.</p>
+        <p>Manage server appearance, integrations, API access, and externally shared document links.</p>
       </div>
       <span class="account-access-summary">Local instance</span>
     </div>
+
+    <section class="card settings-section settings-appearance-section">
+      <div class="settings-section-heading">
+        <div>
+          <span class="account-eyebrow">SERVER APPEARANCE</span>
+          <h2>Navigation Colors</h2>
+          <p>Choose the background color for the left navigation pane and top banner. Cards and content containers keep their existing colors.</p>
+        </div>
+        ${isAdministrator()?`<button class="secondary" type="button" onclick="resetGarageChromeColors()">Reset to Default</button>`:''}
+      </div>
+      <div class="settings-appearance-grid">
+        <label class="settings-color-control">
+          <span><strong>Left pane</strong><small>Navigation background</small></span>
+          <span class="settings-color-picker-wrap">
+            <input type="color" value="${esc(appearance.sidebarColor)}" aria-label="Left pane color" ${appearanceDisabled} oninput="previewGarageChromeColor('sidebar',this.value)" onchange="saveGarageChromeColor('sidebar',this.value)">
+            <output data-color-value="sidebar">${esc(String(appearance.sidebarColor).toUpperCase())}</output>
+          </span>
+        </label>
+        <label class="settings-color-control">
+          <span><strong>Top banner</strong><small>Header background</small></span>
+          <span class="settings-color-picker-wrap">
+            <input type="color" value="${esc(appearance.topbarColor)}" aria-label="Top banner color" ${appearanceDisabled} oninput="previewGarageChromeColor('topbar',this.value)" onchange="saveGarageChromeColor('topbar',this.value)">
+            <output data-color-value="topbar">${esc(String(appearance.topbarColor).toUpperCase())}</output>
+          </span>
+        </label>
+        <label class="settings-color-control">
+          <span><strong>Highlight color</strong><small>Selected navigation, unread notification accents, primary actions, and accent text</small></span>
+          <span class="settings-color-picker-wrap">
+            <input type="color" value="${esc(appearance.highlightColor)}" aria-label="Highlight color" ${appearanceDisabled} oninput="previewGarageChromeColor('highlight',this.value)" onchange="saveGarageChromeColor('highlight',this.value)">
+            <output data-color-value="highlight">${esc(String(appearance.highlightColor).toUpperCase())}</output>
+          </span>
+        </label>
+      </div>
+      <div class="settings-appearance-note">${isAdministrator()?'These colors apply to the GarageLog server interface for all users. Highlight color changes selected navigation, unread notification accents, and interactive accents without changing the bell background or semantic status colors such as warning, success, or danger. Text contrast adjusts automatically for darker panel selections.':'Server appearance can only be changed by an administrator.'}</div>
+    </section>
 
     <section class="card settings-section">
       <div class="settings-section-heading">

@@ -623,15 +623,99 @@ app.MapPut("/api/state", async (JsonElement state, HttpContext context) =>
     if (!CanWrite(user)) return Results.Json(new { error = "This account has read-only access." }, statusCode: StatusCodes.Status403Forbidden);
     if (state.ValueKind != JsonValueKind.Object)
         return Results.BadRequest(new { error = "GarageLog state must be a JSON object." });
-    if (!state.TryGetProperty("mileage", out var mileage)
-        || mileage.ValueKind != JsonValueKind.Number
-        || !mileage.TryGetInt32(out var mileageValue)
-        || mileageValue < 0)
-        return Results.BadRequest(new { error = "A valid non-negative mileage value is required." });
+
+    // Mileage is mirrored at the root for legacy compatibility, but the active
+    // vehicle is now the authoritative source. Older databases/browser state can
+    // contain a missing, null, string, or otherwise stale root mileage value.
+    // Normalize that mirror here instead of rejecting an unrelated state save.
+    static int? ReadNonNegativeMileage(JsonNode? node)
+    {
+        if (node is not JsonValue value) return null;
+        if (value.TryGetValue<int>(out var integer) && integer >= 0) return integer;
+        if (value.TryGetValue<long>(out var longValue) && longValue >= 0 && longValue <= int.MaxValue) return (int)longValue;
+        if (value.TryGetValue<double>(out var doubleValue)
+            && double.IsFinite(doubleValue)
+            && doubleValue >= 0
+            && doubleValue <= int.MaxValue)
+            return (int)Math.Round(doubleValue);
+        if (value.TryGetValue<string>(out var text)
+            && int.TryParse(text?.Replace(",", string.Empty).Trim(), out var parsed)
+            && parsed >= 0)
+            return parsed;
+        return null;
+    }
+
+    var submitted = JsonNode.Parse(state.GetRawText())?.AsObject() ?? new JsonObject();
+    var mileageValue = ReadNonNegativeMileage(submitted["mileage"]);
+
+    string? activeVehicleId = null;
+    if (submitted["activeVehicleId"] is JsonValue activeIdValue
+        && activeIdValue.TryGetValue<string>(out var activeId))
+        activeVehicleId = activeId;
+
+    var vehicles = submitted["vehicles"] as JsonArray;
+    JsonObject? activeVehicle = null;
+    if (vehicles is not null)
+    {
+        activeVehicle = vehicles.OfType<JsonObject>().FirstOrDefault(vehicle =>
+        {
+            if (vehicle["id"] is not JsonValue idValue || !idValue.TryGetValue<string>(out var id)) return false;
+            return !string.IsNullOrWhiteSpace(activeVehicleId) && string.Equals(id, activeVehicleId, StringComparison.Ordinal);
+        }) ?? vehicles.OfType<JsonObject>().FirstOrDefault();
+    }
+
+    mileageValue ??= ReadNonNegativeMileage(activeVehicle?["mileage"]);
+    mileageValue ??= ReadNonNegativeMileage((submitted["vehicle"] as JsonObject)?["mileage"]);
+    mileageValue ??= 0;
+    submitted["mileage"] = mileageValue.Value;
+
+    using var normalizedDocument = JsonDocument.Parse(submitted.ToJsonString());
     var fullState = await ReadStateAsync(connectionString);
-    var normalized = MergeStateForUser(fullState, state, user);
+    var normalized = MergeStateForUser(fullState, normalizedDocument.RootElement, user);
     await WriteStateAsync(connectionString, normalized);
-    return Results.Ok(new { saved = true, mileage = mileageValue, savedAtUtc = DateTimeOffset.UtcNow });
+    return Results.Ok(new { saved = true, mileage = mileageValue.Value, savedAtUtc = DateTimeOffset.UtcNow });
+});
+
+app.MapPut("/api/settings/appearance", async (JsonElement appearance, HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    if (user is null) return Results.Unauthorized();
+    if (!IsAdministrator(user))
+        return Results.Json(new { error = "Administrator access is required to change server appearance." }, statusCode: StatusCodes.Status403Forbidden);
+    if (appearance.ValueKind != JsonValueKind.Object)
+        return Results.BadRequest(new { error = "Appearance settings must be a JSON object." });
+
+    static string? ReadColor(JsonElement source, string propertyName)
+    {
+        if (!source.TryGetProperty(propertyName, out var property) || property.ValueKind != JsonValueKind.String)
+            return null;
+        var value = property.GetString()?.Trim();
+        if (string.IsNullOrWhiteSpace(value) || value.Length != 7 || value[0] != '#' || value.Skip(1).Any(c => !Uri.IsHexDigit(c)))
+            return null;
+        return value.ToLowerInvariant();
+    }
+
+    var sidebarColor = ReadColor(appearance, "sidebarColor");
+    var topbarColor = ReadColor(appearance, "topbarColor");
+    var highlightColor = ReadColor(appearance, "highlightColor");
+    if (sidebarColor is null || topbarColor is null || highlightColor is null)
+        return Results.BadRequest(new { error = "Appearance colors must use six-digit hexadecimal values." });
+
+    var fullState = await ReadStateAsync(connectionString);
+    var root = JsonNode.Parse(fullState)?.AsObject() ?? new JsonObject();
+    root["appearanceSettings"] = new JsonObject
+    {
+        ["sidebarColor"] = sidebarColor,
+        ["topbarColor"] = topbarColor,
+        ["highlightColor"] = highlightColor
+    };
+    await WriteStateAsync(connectionString, root.ToJsonString(new JsonSerializerOptions
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        WriteIndented = true
+    }));
+
+    return Results.Ok(new { saved = true, sidebarColor, topbarColor, highlightColor, savedAtUtc = DateTimeOffset.UtcNow });
 });
 
 
