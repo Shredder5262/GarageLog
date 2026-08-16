@@ -1,0 +1,33 @@
+title: "[Show Your Garage] "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Show the GarageLog community how you're using GarageLog.
+
+  - type: textarea
+    id: setup
+    attributes:
+      label: Your GarageLog setup
+      description: Tell us about your GarageLog installation and how you use it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: vehicles
+    attributes:
+      label: Vehicles
+      description: What vehicles are you tracking?
+
+  - type: textarea
+    id: favorite
+    attributes:
+      label: Favorite GarageLog features
+      description: What parts of GarageLog have been most useful?
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots or additional details
+      description: Share screenshots or anything else you'd like the community to see.

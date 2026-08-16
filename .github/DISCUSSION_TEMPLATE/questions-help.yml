@@ -1,0 +1,45 @@
+title: "[Help] "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Need help with GarageLog? Provide as much information as you can below.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Installation / Docker
+        - Updating GarageLog
+        - Vehicle Setup
+        - Maintenance
+        - Reminders
+        - Documents
+        - Reports
+        - OBD / Mobile App
+        - Backup / Data
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Question or problem
+      description: What are you trying to do, and what is happening?
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: GarageLog version
+      placeholder: "Example: 0.8.4"
+
+  - type: textarea
+    id: details
+    attributes:
+      label: Additional details
+      description: Include logs, screenshots, Docker configuration, or other relevant information.

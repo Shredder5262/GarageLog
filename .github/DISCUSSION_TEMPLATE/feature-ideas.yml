@@ -1,0 +1,39 @@
+title: "[Feature Idea] "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve GarageLog.
+
+        Before submitting an idea, please check existing Discussions and Issues to see if it has already been suggested.
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: Feature idea
+      description: What would you like GarageLog to do?
+      placeholder: Describe the feature or improvement.
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: Explain the vehicle ownership or GarageLog workflow this would improve.
+    validations:
+      required: true
+
+  - type: textarea
+    id: workflow
+    attributes:
+      label: How should it work?
+      description: Describe what the ideal GarageLog workflow would look like.
+      placeholder: Keep simplicity and minimal data entry in mind.
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Screenshots, examples, links, or other information.
