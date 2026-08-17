@@ -3088,3 +3088,38 @@
 .notification-item.unread:hover{background:var(--blue-soft)}
 .notification-item>i{background:var(--blue)}
 .notification-item-icon.blue{background:var(--blue);color:var(--highlight-on,#fff)}
+
+/* Context-aware top search */
+.search-shell{z-index:8}
+.top-search-results{position:absolute;left:0;top:calc(100% + 9px);width:min(620px,calc(100vw - 300px));max-height:min(560px,72vh);overflow:auto;background:var(--card);border:1px solid var(--border);border-radius:13px;box-shadow:0 18px 48px rgba(15,23,42,.18);padding:7px;z-index:40}
+.top-search-results[hidden]{display:none}
+.top-search-results-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 9px 10px;border-bottom:1px solid var(--border)}
+.top-search-results-head strong{font-size:13px}
+.top-search-results-head small{font-size:11px;color:var(--muted)}
+.top-search-results-list{display:grid;padding-top:5px}
+.top-search-result{width:100%;border:0;background:transparent;border-radius:10px;padding:10px;display:grid;grid-template-columns:38px minmax(0,1fr) auto;gap:11px;align-items:center;text-align:left;cursor:pointer}
+.top-search-result:hover,.top-search-result:focus-visible{background:var(--blue-soft);outline:0}
+.top-search-result-icon{width:36px;height:36px;border-radius:10px;display:grid;place-items:center;background:var(--blue-soft);color:var(--blue)}
+.top-search-result-icon svg{width:17px;height:17px}
+.top-search-result>span:nth-child(2){min-width:0}
+.top-search-result strong,.top-search-result small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.top-search-result strong{font-size:13px;color:var(--text)}
+.top-search-result small{font-size:11px;color:var(--muted);margin-top:3px}
+.top-search-result em{font-style:normal;font-size:10px;font-weight:750;letter-spacing:.02em;color:var(--blue);background:var(--blue-soft);border-radius:999px;padding:5px 8px;white-space:nowrap}
+.top-search-no-results{padding:26px 18px;text-align:center;color:var(--muted);display:grid;justify-items:center;gap:7px}
+.top-search-no-results svg{width:25px;height:25px;color:#94a3b8}
+.top-search-no-results strong{color:var(--text);font-size:13px}
+.top-search-no-results small{max-width:460px;line-height:1.45}
+.search-target-flash{animation:garageLogSearchTarget 1.8s ease-out}
+@keyframes garageLogSearchTarget{0%,28%{box-shadow:0 0 0 3px var(--blue-soft),inset 4px 0 var(--blue);background:var(--blue-soft)}100%{box-shadow:none;background:transparent}}
+@media(max-width:760px){.top-search-results{position:fixed;left:12px;right:12px;top:70px;width:auto;max-height:65vh}.top-search-result{grid-template-columns:34px minmax(0,1fr)}.top-search-result em{display:none}}
+
+/* Warranty / recall covered expense records */
+.expense-coverage-badge{display:inline-flex;align-items:center;width:max-content;margin-top:5px;padding:3px 7px;border-radius:999px;font-size:10px;font-weight:700;line-height:1.2;border:1px solid #dbe3ee;background:#f8fafc;color:#475569}
+.expense-coverage-badge.warranty{background:#f3f0ff;border-color:#ddd6fe;color:#6d28d9}
+.expense-coverage-badge.recall{background:#fff7ed;border-color:#fed7aa;color:#c2410c}
+.expense-notes>span{display:block}
+.expense-amount-cell small{display:block;margin-top:3px;color:var(--muted);font-size:9px;font-weight:500;white-space:nowrap}
+#expenseCoveredValueField>span em{font-style:normal;color:var(--muted);font-size:9px;font-weight:500}
+#expenseCoveredValueField>small{color:var(--muted);font-size:10px;line-height:1.35;font-weight:500}
+.optional-label{font-size:10px;color:var(--muted);font-weight:500}
