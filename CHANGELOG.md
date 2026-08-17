@@ -1,6 +1,14 @@
 # Changelog
 
 
+## 0.8.6 - Mobile receipt and manual mileage integration
+
+- Added authenticated mobile odometer updates that write to the selected GarageLog vehicle and mileage history.
+- Added mobile fuel-receipt uploads as normal GarageLog receipt documents with pending review status.
+- Added local receipt OCR suggestions for gallons, total amount, merchant, and price per gallon when available.
+- Added pending-receipt review in Documents; approval creates and links a Fuel expense.
+- Reworked the OBD Devices & Mileage settings layout so vehicle association and trust controls no longer crowd or overlap.
+
 ## 0.8.0 - OBD devices, mileage trust, and UI improvements
 
 - Added persistent GarageLog OBD device registration by device ID.

@@ -575,10 +575,14 @@
 /* GarageLog OBD device association and safe odometer proposals */
 .settings-subheading{margin:18px 0 8px;font-size:15px}
 .settings-obd-list,.settings-odometer-list{display:grid;gap:10px}
-.settings-obd-row,.settings-odometer-row{display:grid;grid-template-columns:minmax(220px,1.2fr) minmax(260px,1fr) auto;gap:16px;align-items:center;padding:14px;border:1px solid var(--line,#dfe3ea);border-radius:12px;background:var(--card,#fff)}
-.settings-obd-main,.settings-obd-status{display:grid;gap:4px}.settings-obd-main code{width:max-content;max-width:100%;overflow:hidden;text-overflow:ellipsis}.settings-obd-association{display:flex;gap:8px;align-items:end}.settings-obd-association label{display:grid;gap:5px;flex:1}.settings-obd-association select{min-height:40px}
+.settings-obd-row{display:grid;grid-template-columns:minmax(240px,.8fr) minmax(0,2.2fr);gap:20px;align-items:start;padding:14px;border:1px solid var(--line,#dfe3ea);border-radius:12px;background:var(--card,#fff)}
+.settings-odometer-row{display:grid;grid-template-columns:minmax(220px,1.2fr) minmax(260px,1fr) auto;gap:16px;align-items:center;padding:14px;border:1px solid var(--line,#dfe3ea);border-radius:12px;background:var(--card,#fff)}
+.settings-obd-main,.settings-obd-status{display:grid;gap:4px;min-width:0}.settings-obd-main code{width:max-content;max-width:100%;overflow:hidden;text-overflow:ellipsis}
+.settings-obd-management{display:grid;grid-template-columns:minmax(280px,.9fr) minmax(360px,1.1fr);gap:14px;align-items:start;min-width:0}
+.settings-obd-association{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:end;min-width:0}.settings-obd-association label{display:grid;gap:5px;min-width:0}.settings-obd-association select{min-height:40px;width:100%;min-width:0}.settings-obd-association button{white-space:nowrap}
 .settings-odometer-values{display:flex;gap:18px}.settings-odometer-values span{display:grid;gap:2px}.settings-odometer-values small,.settings-obd-row small,.settings-odometer-row small{color:var(--muted,#667085)}
-@media(max-width:900px){.settings-obd-row,.settings-odometer-row{grid-template-columns:1fr}.settings-obd-association{align-items:stretch;flex-direction:column}.settings-odometer-values{justify-content:flex-start}}
+@media(max-width:1100px){.settings-obd-management{grid-template-columns:1fr}}
+@media(max-width:900px){.settings-obd-row,.settings-odometer-row{grid-template-columns:1fr}.settings-obd-association{grid-template-columns:1fr}.settings-obd-association button{justify-self:start}.settings-odometer-values{justify-content:flex-start}}
 
 /* OBD trust controls */
 .settings-obd-controls{

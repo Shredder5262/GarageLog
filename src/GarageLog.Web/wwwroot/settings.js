@@ -60,7 +60,7 @@ function settingsTokenStatusClass(status){
 function settingsScopeLabel(scope){
   return ({
     'vehicles:read':'Vehicle Read',
-    'telemetry:write':'Telemetry Write',
+    'telemetry:write':'Mobile Data Write',
     'device:sync':'Device Sync'
   })[scope]||scope;
 }
@@ -151,17 +151,22 @@ function settingsDeviceRows(){
         <code>${esc(device.deviceId)}</code>
         <small>Last seen ${esc(settingsFormatDate(device.lastSeenUtc))}${device.lastVin?` · VIN ${esc(device.lastVin.slice(-8))}`:''}</small>
       </div>
-      <div class="settings-obd-association"><label>GarageLog vehicle<select id="obd-vehicle-${esc(device.deviceId)}"><option value="">Not associated</option>${options}</select></label><button class="secondary" type="button" onclick="associateSettingsObdDevice('${esc(device.deviceId)}')">Save association</button></div>
-      <div class="settings-obd-controls">
-        <div class="settings-obd-vehicle-name">${esc(device.vehicleName||'Choose a vehicle to enable trust settings.')}</div>
-        <label class="settings-toggle-row ${associated?'':'disabled'}">
-          <span><strong>Trusted device</strong><small>${trusted?`Validated for ${esc(device.vehicleName||'this vehicle')}`:'Enable after you verify the mileage readings are accurate.'}</small></span>
-          <input type="checkbox" role="switch" ${trusted?'checked':''} ${associated?'':'disabled'} onchange="setSettingsObdTrusted('${esc(device.deviceId)}',this.checked)">
-        </label>
-        <label class="settings-toggle-row ${trusted?'':'disabled'}">
-          <span><strong>Automatically approve mileage</strong><small>Future valid readings update this vehicle and its mileage history automatically.</small></span>
-          <input type="checkbox" role="switch" ${autoApprove?'checked':''} ${trusted?'':'disabled'} onchange="setSettingsObdAutoApprove('${esc(device.deviceId)}',this.checked)">
-        </label>
+      <div class="settings-obd-management">
+        <div class="settings-obd-association">
+          <label>GarageLog vehicle<select id="obd-vehicle-${esc(device.deviceId)}"><option value="">Not associated</option>${options}</select></label>
+          <button class="secondary" type="button" onclick="associateSettingsObdDevice('${esc(device.deviceId)}')">Save association</button>
+        </div>
+        <div class="settings-obd-controls">
+          <div class="settings-obd-vehicle-name">${esc(device.vehicleName||'Choose a vehicle to enable trust settings.')}</div>
+          <label class="settings-toggle-row ${associated?'':'disabled'}">
+            <span><strong>Trusted device</strong><small>${trusted?`Validated for ${esc(device.vehicleName||'this vehicle')}`:'Enable after you verify the mileage readings are accurate.'}</small></span>
+            <input type="checkbox" role="switch" ${trusted?'checked':''} ${associated?'':'disabled'} onchange="setSettingsObdTrusted('${esc(device.deviceId)}',this.checked)">
+          </label>
+          <label class="settings-toggle-row ${trusted?'':'disabled'}">
+            <span><strong>Automatically approve mileage</strong><small>Future valid readings update this vehicle and its mileage history automatically.</small></span>
+            <input type="checkbox" role="switch" ${autoApprove?'checked':''} ${trusted?'':'disabled'} onchange="setSettingsObdAutoApprove('${esc(device.deviceId)}',this.checked)">
+          </label>
+        </div>
       </div>
     </article>`;
   }).join('');
@@ -366,7 +371,7 @@ window.openApiTokenCreator=function(){
         <fieldset>
           <legend>Permissions</legend>
           <label class="settings-check"><input type="checkbox" name="scope" value="vehicles:read" checked><span><strong>Read vehicle information</strong><small>vehicles:read</small></span></label>
-          <label class="settings-check"><input type="checkbox" name="scope" value="telemetry:write" checked><span><strong>Upload telemetry</strong><small>telemetry:write</small></span></label>
+          <label class="settings-check"><input type="checkbox" name="scope" value="telemetry:write" checked><span><strong>Write mobile data</strong><small>telemetry:write · telemetry, mileage, receipts</small></span></label>
           <label class="settings-check"><input type="checkbox" name="scope" value="device:sync" checked><span><strong>Device synchronization</strong><small>device:sync</small></span></label>
         </fieldset>
 

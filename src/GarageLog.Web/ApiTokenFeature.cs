@@ -567,6 +567,204 @@ static class ApiTokenFeature
             });
         }).AllowAnonymous();
 
+        // GarageLog Mobile manual odometer entry updates the authoritative
+        // GarageLog vehicle and its mileage history.
+        app.MapPost("/api/mobile/vehicles/{vehicleId}/mileage", async (
+            string vehicleId,
+            MobileMileageUpdateRequest request,
+            HttpContext context) =>
+        {
+            var token = await AuthenticateBearerAsync(connectionString, context, "telemetry:write");
+            if (token is null)
+                return Results.Unauthorized();
+
+            var normalizedVehicleId = (vehicleId ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(normalizedVehicleId))
+                return Results.BadRequest(new { error = "A GarageLog vehicle ID is required." });
+
+            if (!double.IsFinite(request.Mileage) || request.Mileage < 0 || request.Mileage > 10_000_000)
+                return Results.BadRequest(new { error = "Mileage must be a valid non-negative value." });
+
+            var recordedUtc = (request.RecordedUtc ?? DateTimeOffset.UtcNow).ToUniversalTime();
+            var source = string.IsNullOrWhiteSpace(request.Source) ? "GarageLog Mobile" : request.Source.Trim();
+            if (source.Length > 80) source = source[..80];
+
+            var result = await ApplyManualMileageAsync(
+                connectionString,
+                normalizedVehicleId,
+                request.Mileage,
+                recordedUtc,
+                source,
+                request.IsCorrection);
+
+            if (!result.Found)
+                return Results.NotFound(new { error = "The selected GarageLog vehicle was not found or is archived." });
+
+            if (!result.Accepted)
+                return Results.Conflict(new
+                {
+                    error = result.Message,
+                    vehicleId = result.VehicleId,
+                    vehicleName = result.VehicleName,
+                    currentMileage = result.PreviousMileage
+                });
+
+            return Results.Ok(new
+            {
+                updated = result.Changed,
+                vehicleId = result.VehicleId,
+                vehicleName = result.VehicleName,
+                previousMileage = result.PreviousMileage,
+                mileage = result.Mileage,
+                recordedUtc,
+                source,
+                correction = request.IsCorrection,
+                message = result.Message
+            });
+        }).AllowAnonymous();
+
+        // A mobile fuel receipt becomes a normal GarageLog document. The pending
+        // document is persisted before OCR runs so the original image remains
+        // available even when OCR is unavailable or cannot identify the values.
+        app.MapPost("/api/mobile/documents/receipts", async (HttpContext context) =>
+        {
+            var token = await AuthenticateBearerAsync(connectionString, context, "telemetry:write");
+            if (token is null)
+                return Results.Unauthorized();
+
+            if (!context.Request.HasFormContentType)
+                return Results.BadRequest(new { error = "A multipart receipt image upload is required." });
+
+            var form = await context.Request.ReadFormAsync();
+            var image = form.Files.GetFile("image");
+            if (image is null || image.Length == 0)
+                return Results.BadRequest(new { error = "Choose a non-empty receipt image." });
+            if (image.Length > 15L * 1024L * 1024L)
+                return Results.BadRequest(new { error = "Receipt images must be 15 MB or smaller." });
+
+            var vehicleId = form["vehicleId"].ToString().Trim();
+            if (string.IsNullOrWhiteSpace(vehicleId))
+                return Results.BadRequest(new { error = "Choose a GarageLog vehicle before uploading the receipt." });
+
+            var vehicles = await ReadVehicleSummariesAsync(connectionString);
+            var vehicle = vehicles.FirstOrDefault(item => string.Equals(item.Id, vehicleId, StringComparison.Ordinal));
+            if (vehicle is null)
+                return Results.NotFound(new { error = "The selected GarageLog vehicle was not found or is archived." });
+
+            var contentType = (image.ContentType ?? string.Empty).Trim().ToLowerInvariant();
+            var extension = contentType switch
+            {
+                "image/png" => ".png",
+                "image/jpeg" or "image/jpg" => ".jpg",
+                _ => string.Empty
+            };
+            if (string.IsNullOrWhiteSpace(extension))
+                return Results.BadRequest(new { error = "Use a JPEG or PNG receipt image." });
+
+            await using (var signatureStream = image.OpenReadStream())
+            {
+                if (!await HasExpectedReceiptImageSignatureAsync(signatureStream, extension))
+                    return Results.BadRequest(new { error = "The uploaded receipt does not contain a valid JPEG or PNG image." });
+            }
+
+            var capturedUtc = DateTimeOffset.UtcNow;
+            if (DateTimeOffset.TryParse(
+                    form["capturedUtc"].ToString(),
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.AssumeUniversal,
+                    out var parsedCaptured))
+                capturedUtc = parsedCaptured.ToUniversalTime();
+
+            var documentId = Guid.NewGuid().ToString("N");
+            var storedName = $"{Guid.NewGuid():N}{extension}";
+            var originalName = Path.GetFileName(image.FileName);
+            if (string.IsNullOrWhiteSpace(originalName))
+                originalName = $"fuel-receipt-{capturedUtc:yyyyMMdd-HHmmss}{extension}";
+
+            var documentsDirectory = Path.Combine(ResolveDataRoot(connectionString), "documents");
+            Directory.CreateDirectory(documentsDirectory);
+            var fullPath = Path.Combine(documentsDirectory, storedName);
+
+            try
+            {
+                await using (var input = image.OpenReadStream())
+                await using (var output = File.Create(fullPath))
+                {
+                    await input.CopyToAsync(output);
+                }
+
+                if (!await CreatePendingMobileReceiptAsync(
+                        connectionString,
+                        documentId,
+                        vehicle.Id,
+                        vehicle.Name,
+                        storedName,
+                        originalName,
+                        extension,
+                        contentType,
+                        image.Length,
+                        capturedUtc,
+                        token.Name))
+                {
+                    try { File.Delete(fullPath); } catch { }
+                    return Results.Conflict(new { error = "GarageLog could not create the pending receipt document." });
+                }
+
+                var ocr = await RunFuelOcrAsync(fullPath);
+                var extraction = ExtractFuelReceiptDetails(ocr.Text);
+                var documentOcrStatus = ocr.Status switch
+                {
+                    "complete" when !string.IsNullOrWhiteSpace(ocr.Text) => "indexed",
+                    "complete" => "empty",
+                    "unavailable" => "needs-ocr",
+                    _ => "error"
+                };
+
+                await UpdateMobileReceiptOcrAsync(
+                    connectionString,
+                    documentId,
+                    documentOcrStatus,
+                    ocr.Status,
+                    ocr.Text,
+                    extraction);
+
+                var message = documentOcrStatus switch
+                {
+                    "indexed" when extraction.Amount.HasValue || extraction.Gallons.HasValue =>
+                        "Receipt uploaded to GarageLog as a pending document. OCR suggestions are ready for review.",
+                    "indexed" =>
+                        "Receipt uploaded to GarageLog as a pending document. OCR text is available for review.",
+                    "needs-ocr" =>
+                        "Receipt uploaded to GarageLog as a pending document, but Tesseract OCR is unavailable on this host.",
+                    _ =>
+                        "Receipt uploaded to GarageLog as a pending document. OCR needs review."
+                };
+
+                return Results.Ok(new
+                {
+                    documentId,
+                    vehicleId = vehicle.Id,
+                    vehicleName = vehicle.Name,
+                    storedName,
+                    reviewStatus = "Pending",
+                    ocrStatus = documentOcrStatus,
+                    gallons = extraction.Gallons,
+                    amount = extraction.Amount,
+                    merchant = extraction.Merchant,
+                    pricePerGallon = extraction.PricePerGallon,
+                    message
+                });
+            }
+            catch
+            {
+                if (!await MobileReceiptExistsAsync(connectionString, documentId))
+                {
+                    try { File.Delete(fullPath); } catch { }
+                }
+                throw;
+            }
+        }).AllowAnonymous();
+
         app.MapPost("/api/mobile/fuel-captures", async (HttpContext context) =>
         {
             var token = await AuthenticateBearerAsync(connectionString, context, "telemetry:write");
@@ -1444,6 +1642,438 @@ static class ApiTokenFeature
         return await command.ExecuteNonQueryAsync() > 0;
     }
 
+    private static async Task<MobileMileageApplyResult> ApplyManualMileageAsync(
+        string connectionString,
+        string vehicleId,
+        double mileage,
+        DateTimeOffset recordedUtc,
+        string source,
+        bool isCorrection)
+    {
+        await using var connection = new SqliteConnection(connectionString);
+        await connection.OpenAsync();
+        await using var transaction = await connection.BeginTransactionAsync();
+
+        string stateJson;
+        await using (var stateCommand = connection.CreateCommand())
+        {
+            stateCommand.Transaction = (SqliteTransaction)transaction;
+            stateCommand.CommandText = "SELECT Json FROM AppState WHERE Id = 1;";
+            stateJson = await stateCommand.ExecuteScalarAsync() as string ?? "{}";
+        }
+
+        var root = JsonNode.Parse(stateJson) as JsonObject ?? new JsonObject();
+        var vehicles = root["vehicles"] as JsonArray ?? new JsonArray();
+        var vehicle = vehicles.OfType<JsonObject>()
+            .FirstOrDefault(item => string.Equals(JsonString(item["id"]), vehicleId, StringComparison.Ordinal));
+        if (vehicle is null)
+            return new MobileMileageApplyResult(false, false, false, vehicleId, null, null, null, "The GarageLog vehicle no longer exists.");
+
+        var lifecycle = JsonString(vehicle["lifecycleStatus"]);
+        if (lifecycle is "Sold" or "Decommissioned")
+            return new MobileMileageApplyResult(false, false, false, vehicleId, VehicleDisplayName(vehicle), null, null, "Archived vehicles cannot receive mobile mileage updates.");
+
+        var vehicleName = VehicleDisplayName(vehicle);
+        var currentMileage = JsonDouble(vehicle["mileage"]);
+
+        if (mileage + 0.01 < currentMileage && !isCorrection)
+        {
+            return new MobileMileageApplyResult(
+                true,
+                false,
+                false,
+                vehicleId,
+                vehicleName,
+                currentMileage,
+                currentMileage,
+                $"The entered mileage ({mileage:0.#}) is lower than the current GarageLog mileage ({currentMileage:0.#}). Confirm it as a correction to continue.");
+        }
+
+        if (Math.Abs(mileage - currentMileage) <= 0.01)
+        {
+            await transaction.CommitAsync();
+            return new MobileMileageApplyResult(
+                true,
+                true,
+                false,
+                vehicleId,
+                vehicleName,
+                currentMileage,
+                currentMileage,
+                "GarageLog already has this odometer reading.");
+        }
+
+        vehicle["mileage"] = mileage;
+        var history = vehicle["mileageHistory"] as JsonArray;
+        if (history is null)
+        {
+            history = new JsonArray();
+            vehicle["mileageHistory"] = history;
+        }
+
+        var historyEntry = new JsonObject
+        {
+            ["date"] = recordedUtc.ToString("O"),
+            ["mileage"] = mileage,
+            ["source"] = isCorrection ? $"{source} correction" : source,
+            ["kind"] = "manual"
+        };
+        if (isCorrection)
+            historyEntry["correction"] = true;
+        history.Add(historyEntry);
+
+        if (string.Equals(JsonString(root["activeVehicleId"]), vehicleId, StringComparison.Ordinal))
+        {
+            root["mileage"] = mileage;
+            root["mileageHistory"] = history.DeepClone();
+            root["vehicle"] = vehicle.DeepClone();
+        }
+
+        await using (var updateState = connection.CreateCommand())
+        {
+            updateState.Transaction = (SqliteTransaction)transaction;
+            updateState.CommandText = """
+                UPDATE AppState
+                SET Json = $json, UpdatedUtc = $updatedUtc
+                WHERE Id = 1;
+                """;
+            updateState.Parameters.AddWithValue("$json", root.ToJsonString(new JsonSerializerOptions
+            {
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+                WriteIndented = true
+            }));
+            updateState.Parameters.AddWithValue("$updatedUtc", DateTimeOffset.UtcNow.ToString("O"));
+            await updateState.ExecuteNonQueryAsync();
+        }
+
+        await transaction.CommitAsync();
+        return new MobileMileageApplyResult(
+            true,
+            true,
+            true,
+            vehicleId,
+            vehicleName,
+            currentMileage,
+            mileage,
+            isCorrection
+                ? $"GarageLog mileage corrected from {currentMileage:0.#} to {mileage:0.#} miles."
+                : $"GarageLog mileage updated from {currentMileage:0.#} to {mileage:0.#} miles.");
+    }
+
+    private static async Task<bool> CreatePendingMobileReceiptAsync(
+        string connectionString,
+        string documentId,
+        string vehicleId,
+        string vehicleName,
+        string storedName,
+        string originalName,
+        string extension,
+        string contentType,
+        long bytes,
+        DateTimeOffset capturedUtc,
+        string tokenName)
+    {
+        await using var connection = new SqliteConnection(connectionString);
+        await connection.OpenAsync();
+        await using var transaction = await connection.BeginTransactionAsync();
+
+        string stateJson;
+        await using (var stateCommand = connection.CreateCommand())
+        {
+            stateCommand.Transaction = (SqliteTransaction)transaction;
+            stateCommand.CommandText = "SELECT Json FROM AppState WHERE Id = 1;";
+            stateJson = await stateCommand.ExecuteScalarAsync() as string ?? "{}";
+        }
+
+        var root = JsonNode.Parse(stateJson) as JsonObject ?? new JsonObject();
+        var vehicles = root["vehicles"] as JsonArray ?? new JsonArray();
+        var vehicleExists = vehicles.OfType<JsonObject>().Any(item =>
+            string.Equals(JsonString(item["id"]), vehicleId, StringComparison.Ordinal));
+        if (!vehicleExists)
+            return false;
+
+        var documents = root["documents"] as JsonArray;
+        if (documents is null)
+        {
+            documents = new JsonArray();
+            root["documents"] = documents;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var receiptName = $"Fuel Receipt - {capturedUtc:MMM d, yyyy}";
+        var document = new JsonObject
+        {
+            ["id"] = documentId,
+            ["vehicleId"] = vehicleId,
+            ["name"] = receiptName,
+            ["originalName"] = originalName,
+            ["extension"] = extension.TrimStart('.'),
+            ["contentType"] = contentType,
+            ["category"] = "Receipts",
+            ["tags"] = new JsonArray("fuel", "receipt", "mobile"),
+            ["services"] = new JsonArray("Fuel"),
+            ["shop"] = "",
+            ["startsOn"] = null,
+            ["expiresOn"] = null,
+            ["date"] = capturedUtc.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+            ["addedAt"] = now.ToString("O"),
+            ["capturedUtc"] = capturedUtc.ToString("O"),
+            ["bytes"] = bytes,
+            ["size"] = FormatFileSize(bytes),
+            ["storedName"] = storedName,
+            ["lastViewedAt"] = null,
+            ["ocrStatus"] = "indexing",
+            ["ocrText"] = "",
+            ["linkedExpenseId"] = null,
+            ["reviewStatus"] = "Pending",
+            ["source"] = "GarageLog Mobile",
+            ["mobileCapture"] = true,
+            ["uploadedByToken"] = tokenName,
+            ["vehicleNameAtCapture"] = vehicleName,
+            ["receiptOcr"] = new JsonObject
+            {
+                ["status"] = "processing",
+                ["gallons"] = null,
+                ["amount"] = null,
+                ["merchant"] = null,
+                ["pricePerGallon"] = null
+            }
+        };
+        documents.Insert(0, document);
+
+        await using var update = connection.CreateCommand();
+        update.Transaction = (SqliteTransaction)transaction;
+        update.CommandText = """
+            UPDATE AppState
+            SET Json = $json, UpdatedUtc = $updatedUtc
+            WHERE Id = 1;
+            """;
+        update.Parameters.AddWithValue("$json", root.ToJsonString(new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            WriteIndented = true
+        }));
+        update.Parameters.AddWithValue("$updatedUtc", now.ToString("O"));
+        var changed = await update.ExecuteNonQueryAsync() > 0;
+
+        await transaction.CommitAsync();
+        return changed;
+    }
+
+    private static async Task UpdateMobileReceiptOcrAsync(
+        string connectionString,
+        string documentId,
+        string documentOcrStatus,
+        string rawOcrStatus,
+        string? ocrText,
+        FuelReceiptExtraction extraction)
+    {
+        await using var connection = new SqliteConnection(connectionString);
+        await connection.OpenAsync();
+        await using var transaction = await connection.BeginTransactionAsync();
+
+        string stateJson;
+        await using (var stateCommand = connection.CreateCommand())
+        {
+            stateCommand.Transaction = (SqliteTransaction)transaction;
+            stateCommand.CommandText = "SELECT Json FROM AppState WHERE Id = 1;";
+            stateJson = await stateCommand.ExecuteScalarAsync() as string ?? "{}";
+        }
+
+        var root = JsonNode.Parse(stateJson) as JsonObject ?? new JsonObject();
+        var documents = root["documents"] as JsonArray ?? new JsonArray();
+        var document = documents.OfType<JsonObject>().FirstOrDefault(item =>
+            string.Equals(JsonString(item["id"]), documentId, StringComparison.Ordinal));
+        if (document is null)
+        {
+            await transaction.CommitAsync();
+            return;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        document["ocrStatus"] = documentOcrStatus;
+        document["ocrText"] = ocrText ?? "";
+        document["ocrMethod"] = rawOcrStatus == "complete" ? "image-ocr" : rawOcrStatus;
+        document["ocrIndexedAt"] = now.ToString("O");
+        document["ocrError"] = rawOcrStatus switch
+        {
+            "unavailable" => "Tesseract OCR is not available on the GarageLog host.",
+            "timeout" => "Receipt OCR timed out.",
+            "failed" => "Receipt OCR could not read the image.",
+            _ => ""
+        };
+        if (!string.IsNullOrWhiteSpace(extraction.Merchant))
+            document["shop"] = extraction.Merchant;
+
+        document["receiptOcr"] = new JsonObject
+        {
+            ["status"] = rawOcrStatus,
+            ["confidence"] = extraction.Confidence,
+            ["gallons"] = extraction.Gallons,
+            ["amount"] = extraction.Amount,
+            ["merchant"] = extraction.Merchant,
+            ["pricePerGallon"] = extraction.PricePerGallon,
+            ["updatedUtc"] = now.ToString("O")
+        };
+
+        await using var update = connection.CreateCommand();
+        update.Transaction = (SqliteTransaction)transaction;
+        update.CommandText = """
+            UPDATE AppState
+            SET Json = $json, UpdatedUtc = $updatedUtc
+            WHERE Id = 1;
+            """;
+        update.Parameters.AddWithValue("$json", root.ToJsonString(new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            WriteIndented = true
+        }));
+        update.Parameters.AddWithValue("$updatedUtc", now.ToString("O"));
+        await update.ExecuteNonQueryAsync();
+        await transaction.CommitAsync();
+    }
+
+    private static async Task<bool> MobileReceiptExistsAsync(string connectionString, string documentId)
+    {
+        var root = await ReadGarageStateAsync(connectionString);
+        return (root["documents"] as JsonArray ?? new JsonArray())
+            .OfType<JsonObject>()
+            .Any(item => string.Equals(JsonString(item["id"]), documentId, StringComparison.Ordinal));
+    }
+
+    private static async Task<bool> HasExpectedReceiptImageSignatureAsync(Stream stream, string extension)
+    {
+        if (!stream.CanRead)
+            return false;
+
+        var buffer = new byte[12];
+        var read = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length));
+        if (stream.CanSeek) stream.Position = 0;
+
+        if (extension == ".jpg")
+            return read >= 3 && buffer[0] == 0xFF && buffer[1] == 0xD8 && buffer[2] == 0xFF;
+
+        if (extension == ".png")
+        {
+            byte[] expected = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+            return read >= expected.Length && expected.SequenceEqual(buffer.Take(expected.Length));
+        }
+
+        return false;
+    }
+
+    private static FuelReceiptExtraction ExtractFuelReceiptDetails(string? text)
+    {
+        var gallonsResult = ExtractGallons(text);
+        var amountResult = ExtractReceiptAmount(text);
+        var priceResult = ExtractPricePerGallon(text);
+        var merchant = ExtractReceiptMerchant(text);
+
+        var confidence = gallonsResult.Confidence == "high" || amountResult.Confidence == "high"
+            ? "high"
+            : gallonsResult.Gallons.HasValue || amountResult.Amount.HasValue
+                ? "low"
+                : null;
+
+        return new FuelReceiptExtraction(
+            gallonsResult.Gallons,
+            amountResult.Amount,
+            merchant,
+            priceResult,
+            confidence);
+    }
+
+    private static (decimal? Amount, string? Confidence) ExtractReceiptAmount(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return (null, null);
+
+        var patterns = new[]
+        {
+            @"(?im)^\s*(?:grand\s+total|total|amount\s+due|sale\s+total)\s*[:=\-]?\s*\$?\s*(?<n>\d{1,6}(?:\.\d{2}))\b",
+            @"(?im)\b(?:grand\s+total|amount\s+due)\b[^\d$]{0,14}\$?\s*(?<n>\d{1,6}(?:\.\d{2}))\b"
+        };
+
+        foreach (var pattern in patterns)
+        {
+            var match = Regex.Match(text, pattern, RegexOptions.CultureInvariant);
+            if (!match.Success)
+                continue;
+            if (decimal.TryParse(match.Groups["n"].Value, NumberStyles.Number, CultureInfo.InvariantCulture, out var amount)
+                && amount > 0 && amount <= 100_000)
+                return (amount, "high");
+        }
+
+        return (null, null);
+    }
+
+    private static decimal? ExtractPricePerGallon(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return null;
+
+        var patterns = new[]
+        {
+            @"(?im)(?:price\s*(?:/|per)\s*gal(?:lon)?|unit\s+price|price)\s*[:=\-]?\s*\$?\s*(?<n>\d{1,2}(?:\.\d{2,4}))",
+            @"(?im)\$?\s*(?<n>\d{1,2}(?:\.\d{2,4}))\s*(?:/gal|per\s+gal(?:lon)?)"
+        };
+
+        foreach (var pattern in patterns)
+        {
+            var match = Regex.Match(text, pattern, RegexOptions.CultureInvariant);
+            if (!match.Success)
+                continue;
+            if (decimal.TryParse(match.Groups["n"].Value, NumberStyles.Number, CultureInfo.InvariantCulture, out var price)
+                && price > 0.25m && price < 25m)
+                return price;
+        }
+
+        return null;
+    }
+
+    private static string? ExtractReceiptMerchant(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return null;
+
+        foreach (var raw in text.Split('\n').Take(10))
+        {
+            var line = Regex.Replace(raw.Trim(), @"\s{2,}", " ");
+            if (line.Length is < 3 or > 80)
+                continue;
+            if (!Regex.IsMatch(line, "[A-Za-z]{3,}"))
+                continue;
+            if (Regex.IsMatch(line, @"(?i)^(receipt|customer\s+copy|transaction|date|time|total|amount|gallons?|fuel|pump|terminal|merchant\s+copy)\b"))
+                continue;
+            if (Regex.IsMatch(line, @"(?i)^\d+\s+\w+\s+(st|street|rd|road|ave|avenue|blvd|boulevard)\b"))
+                continue;
+            return line;
+        }
+
+        return null;
+    }
+
+    private static string VehicleDisplayName(JsonObject vehicle)
+    {
+        var explicitName = JsonString(vehicle["name"]);
+        if (!string.IsNullOrWhiteSpace(explicitName))
+            return explicitName;
+
+        var parts = new[] { JsonString(vehicle["year"]), JsonString(vehicle["make"]), JsonString(vehicle["model"]) }
+            .Where(part => !string.IsNullOrWhiteSpace(part));
+        var name = string.Join(" ", parts);
+        return string.IsNullOrWhiteSpace(name) ? "GarageLog vehicle" : name;
+    }
+
+    private static string FormatFileSize(long bytes)
+    {
+        if (bytes >= 1024L * 1024L)
+            return $"{bytes / 1024d / 1024d:0.##} MB";
+        if (bytes >= 1024L)
+            return $"{bytes / 1024d:0.##} KB";
+        return $"{bytes} B";
+    }
+
     private static string ResolveDataRoot(string connectionString)
     {
         try
@@ -2043,6 +2673,29 @@ sealed record ObdDeviceAssociateRequest(
 sealed record ObdDeviceSettingsRequest(
     bool Trusted,
     bool AutoApproveMileage);
+
+sealed record MobileMileageUpdateRequest(
+    double Mileage,
+    DateTimeOffset? RecordedUtc,
+    string? Source,
+    bool IsCorrection);
+
+sealed record MobileMileageApplyResult(
+    bool Found,
+    bool Accepted,
+    bool Changed,
+    string VehicleId,
+    string? VehicleName,
+    double? PreviousMileage,
+    double? Mileage,
+    string Message);
+
+sealed record FuelReceiptExtraction(
+    decimal? Gallons,
+    decimal? Amount,
+    string? Merchant,
+    decimal? PricePerGallon,
+    string? Confidence);
 
 sealed record TelemetryTripUploadRequest(
     string? TripId,
