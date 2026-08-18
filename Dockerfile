@@ -17,6 +17,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
+        imagemagick \
         libreoffice-calc \
         libreoffice-core \
         libreoffice-writer \

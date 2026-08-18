@@ -680,6 +680,13 @@ static class ApiTokenFeature
             if (vehicle is null)
                 return Results.NotFound(new { error = "The selected GarageLog vehicle was not found or is archived." });
 
+            var captureType = string.Equals(
+                    form["captureType"].ToString().Trim(),
+                    "pump",
+                    StringComparison.OrdinalIgnoreCase)
+                ? "pump"
+                : "receipt";
+
             var contentType = (image.ContentType ?? string.Empty).Trim().ToLowerInvariant();
             var extension = contentType switch
             {
@@ -733,14 +740,17 @@ static class ApiTokenFeature
                         contentType,
                         image.Length,
                         capturedUtc,
-                        token.Name))
+                        token.Name,
+                        captureType))
                 {
                     try { File.Delete(fullPath); } catch { }
                     return Results.Conflict(new { error = "GarageLog could not create the pending receipt document." });
                 }
 
-                var ocr = await RunFuelOcrAsync(fullPath);
-                var extraction = ExtractFuelReceiptDetails(ocr.Text);
+                var ocr = await RunFuelOcrAsync(fullPath, captureType);
+                var extraction = captureType == "pump"
+                    ? ExtractPumpDisplayDetails(ocr.Text)
+                    : ExtractFuelReceiptDetails(ocr.Text);
                 var documentOcrStatus = ocr.Status switch
                 {
                     "complete" when !string.IsNullOrWhiteSpace(ocr.Text) => "indexed",
@@ -776,6 +786,7 @@ static class ApiTokenFeature
                     vehicleName = vehicle.Name,
                     storedName,
                     reviewStatus = "Pending",
+                    captureType,
                     ocrStatus = documentOcrStatus,
                     gallons = extraction.Gallons,
                     amount = extraction.Amount,
@@ -1808,7 +1819,8 @@ static class ApiTokenFeature
         string contentType,
         long bytes,
         DateTimeOffset capturedUtc,
-        string tokenName)
+        string tokenName,
+        string captureType)
     {
         await using var connection = new SqliteConnection(connectionString);
         await connection.OpenAsync();
@@ -1837,7 +1849,9 @@ static class ApiTokenFeature
         }
 
         var now = DateTimeOffset.UtcNow;
-        var receiptName = $"Fuel Receipt - {capturedUtc:MMM d, yyyy}";
+        var receiptName = captureType == "pump"
+            ? $"Fuel Pump - {capturedUtc:MMM d, yyyy}"
+            : $"Fuel Receipt - {capturedUtc:MMM d, yyyy}";
         var document = new JsonObject
         {
             ["id"] = documentId,
@@ -1847,7 +1861,9 @@ static class ApiTokenFeature
             ["extension"] = extension.TrimStart('.'),
             ["contentType"] = contentType,
             ["category"] = "Receipts",
-            ["tags"] = new JsonArray("fuel", "receipt", "mobile"),
+            ["tags"] = captureType == "pump"
+                ? new JsonArray("fuel", "receipt", "mobile", "pump-display")
+                : new JsonArray("fuel", "receipt", "mobile"),
             ["services"] = new JsonArray("Fuel"),
             ["shop"] = "",
             ["startsOn"] = null,
@@ -1865,11 +1881,13 @@ static class ApiTokenFeature
             ["reviewStatus"] = "Pending",
             ["source"] = "GarageLog Mobile",
             ["mobileCapture"] = true,
+            ["mobileCaptureType"] = captureType,
             ["uploadedByToken"] = tokenName,
             ["vehicleNameAtCapture"] = vehicleName,
             ["receiptOcr"] = new JsonObject
             {
                 ["status"] = "processing",
+                ["captureType"] = captureType,
                 ["gallons"] = null,
                 ["amount"] = null,
                 ["merchant"] = null,
@@ -1942,9 +1960,11 @@ static class ApiTokenFeature
         if (!string.IsNullOrWhiteSpace(extraction.Merchant))
             document["shop"] = extraction.Merchant;
 
+        var captureType = JsonString(document["mobileCaptureType"]);
         document["receiptOcr"] = new JsonObject
         {
             ["status"] = rawOcrStatus,
+            ["captureType"] = string.IsNullOrWhiteSpace(captureType) ? "receipt" : captureType,
             ["confidence"] = extraction.Confidence,
             ["gallons"] = extraction.Gallons,
             ["amount"] = extraction.Amount,
@@ -1997,6 +2017,114 @@ static class ApiTokenFeature
         }
 
         return false;
+    }
+
+    private static FuelReceiptExtraction ExtractPumpDisplayDetails(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return new FuelReceiptExtraction(null, null, null, null, null);
+
+        var labeledGallons = ExtractGallons(text);
+        var labeledAmount = ExtractReceiptAmount(text);
+
+        decimal? amount = labeledAmount.Amount;
+        if (!amount.HasValue)
+        {
+            var currencyMatches = Regex.Matches(
+                    text,
+                    @"(?<!\d)\$\s*(?<n>\d{1,4}(?:\.\d{2}))(?!\d)",
+                    RegexOptions.CultureInvariant)
+                .Select(match => ParsePumpNumber(match.Groups["n"].Value))
+                .Where(value => value is > 0m and <= 1000m)
+                .Select(value => value!.Value)
+                .Distinct()
+                .ToList();
+
+            if (currencyMatches.Count == 1)
+                amount = currencyMatches[0];
+        }
+
+        decimal? gallons = labeledGallons.Gallons;
+        if (!gallons.HasValue)
+        {
+            var gallonCandidates = Regex.Matches(
+                    text,
+                    @"(?<!\d)(?<n>\d{1,3}[.,]\d{3,4})(?!\d)",
+                    RegexOptions.CultureInvariant)
+                .Select(match => ParsePumpNumber(match.Groups["n"].Value))
+                .Where(value => value is > 0.05m and <= 200m)
+                .Select(value => value!.Value)
+                .Distinct()
+                .ToList();
+
+            // Do not guess between multiple three/four-decimal values because a
+            // pump may also show price-per-gallon using the same number format.
+            if (gallonCandidates.Count == 1)
+                gallons = gallonCandidates[0];
+        }
+
+        if (!amount.HasValue)
+        {
+            var amountCandidates = Regex.Matches(
+                    text,
+                    @"(?<!\d)(?<n>\d{1,4}[.,]\d{2})(?!\d)",
+                    RegexOptions.CultureInvariant)
+                .Select(match => ParsePumpNumber(match.Groups["n"].Value))
+                .Where(value => value is >= 1m and <= 1000m)
+                .Select(value => value!.Value)
+                .Where(value => !gallons.HasValue || value != gallons.Value)
+                .Distinct()
+                .ToList();
+
+            if (amountCandidates.Count == 1)
+                amount = amountCandidates[0];
+        }
+
+        decimal? pricePerGallon = null;
+        if (amount.HasValue && gallons.HasValue && gallons.Value > 0)
+        {
+            var calculated = amount.Value / gallons.Value;
+            if (calculated is >= 0.25m and <= 25m)
+                pricePerGallon = decimal.Round(calculated, 3);
+            else
+            {
+                // An impossible price means at least one unlabeled OCR guess is
+                // wrong. Preserve only values backed by an explicit label.
+                if (!labeledAmount.Amount.HasValue)
+                    amount = null;
+                if (!labeledGallons.Gallons.HasValue)
+                    gallons = null;
+            }
+        }
+
+        var confidence =
+            labeledAmount.Confidence == "high" || labeledGallons.Confidence == "high"
+                ? "high"
+                : amount.HasValue || gallons.HasValue
+                    ? "low"
+                    : null;
+
+        return new FuelReceiptExtraction(
+            gallons,
+            amount,
+            null,
+            pricePerGallon,
+            confidence);
+    }
+
+    private static decimal? ParsePumpNumber(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
+
+        var normalized = value.Trim().Replace(',', '.');
+        return decimal.TryParse(
+                normalized,
+                NumberStyles.Number,
+                CultureInfo.InvariantCulture,
+                out var parsed)
+            ? parsed
+            : null;
     }
 
     private static FuelReceiptExtraction ExtractFuelReceiptDetails(string? text)
@@ -2138,7 +2266,76 @@ static class ApiTokenFeature
         }
     }
 
-    private static async Task<(string Status, string? Text)> RunFuelOcrAsync(string imagePath)
+    private static Task<(string Status, string? Text)> RunFuelOcrAsync(string imagePath) =>
+        RunFuelOcrAsync(imagePath, "receipt");
+
+    private static async Task<(string Status, string? Text)> RunFuelOcrAsync(
+        string imagePath,
+        string captureType)
+    {
+        if (!string.Equals(captureType, "pump", StringComparison.OrdinalIgnoreCase))
+            return await RunTesseractPassAsync(imagePath, "6");
+
+        // Pump LCD/LED displays are visually very different from printed receipts.
+        // Run several sparse/numeric-friendly passes and combine their output so
+        // the extraction logic can choose plausible amount/gallon candidates.
+        var inputs = new List<string> { imagePath };
+        string? processedPath = null;
+
+        try
+        {
+            processedPath = await TryCreatePumpOcrImageAsync(imagePath);
+            if (!string.IsNullOrWhiteSpace(processedPath))
+                inputs.Add(processedPath);
+
+            var passes = new List<Task<(string Status, string? Text)>>
+            {
+                RunTesseractPassAsync(imagePath, "6"),
+                RunTesseractPassAsync(
+                    imagePath,
+                    "11",
+                    "0123456789.$GgAaLlOoNnSs")
+            };
+
+            if (!string.IsNullOrWhiteSpace(processedPath))
+            {
+                passes.Add(RunTesseractPassAsync(processedPath, "6"));
+                passes.Add(RunTesseractPassAsync(
+                    processedPath,
+                    "11",
+                    "0123456789.$GgAaLlOoNnSs"));
+            }
+
+            var results = await Task.WhenAll(passes);
+            var sawAvailableOcr = results.Any(pass => pass.Status != "unavailable");
+            var outputs = results
+                .Where(pass => pass.Status == "complete" && !string.IsNullOrWhiteSpace(pass.Text))
+                .Select(pass => pass.Text!)
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+
+            var combined = string.Join(
+                Environment.NewLine + "---" + Environment.NewLine,
+                outputs);
+
+            if (!sawAvailableOcr)
+                return ("unavailable", null);
+
+            return ("complete", combined);
+        }
+        finally
+        {
+            if (!string.IsNullOrWhiteSpace(processedPath))
+            {
+                try { File.Delete(processedPath); } catch { }
+            }
+        }
+    }
+
+    private static async Task<(string Status, string? Text)> RunTesseractPassAsync(
+        string imagePath,
+        string pageSegmentationMode,
+        string? whitelist = null)
     {
         var executable = FindTesseractExecutable();
 
@@ -2155,8 +2352,15 @@ static class ApiTokenFeature
 
             start.ArgumentList.Add(imagePath);
             start.ArgumentList.Add("stdout");
+            start.ArgumentList.Add("-l");
+            start.ArgumentList.Add("eng");
             start.ArgumentList.Add("--psm");
-            start.ArgumentList.Add("6");
+            start.ArgumentList.Add(pageSegmentationMode);
+            if (!string.IsNullOrWhiteSpace(whitelist))
+            {
+                start.ArgumentList.Add("-c");
+                start.ArgumentList.Add($"tessedit_char_whitelist={whitelist}");
+            }
 
             using var process = Process.Start(start);
             if (process is null)
@@ -2166,7 +2370,6 @@ static class ApiTokenFeature
             var stderrTask = process.StandardError.ReadToEndAsync();
 
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(25));
-
             try
             {
                 await process.WaitForExitAsync(timeout.Token);
@@ -2188,6 +2391,99 @@ static class ApiTokenFeature
         {
             return ("unavailable", null);
         }
+    }
+
+    private static async Task<string?> TryCreatePumpOcrImageAsync(string imagePath)
+    {
+        var executable = FindImageMagickExecutable();
+        if (string.IsNullOrWhiteSpace(executable))
+            return null;
+
+        var output = Path.Combine(
+            Path.GetTempPath(),
+            $"garagelog-pump-ocr-{Guid.NewGuid():N}.png");
+
+        try
+        {
+            var start = new ProcessStartInfo
+            {
+                FileName = executable,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+
+            // Down/up sampling helps suppress photographed-screen moire before
+            // contrast enhancement. Keep the original too; OCR runs against both.
+            start.ArgumentList.Add(imagePath);
+            start.ArgumentList.Add("-auto-orient");
+            start.ArgumentList.Add("-colorspace");
+            start.ArgumentList.Add("Gray");
+            start.ArgumentList.Add("-resize");
+            start.ArgumentList.Add("60%");
+            start.ArgumentList.Add("-resize");
+            start.ArgumentList.Add("330%");
+            start.ArgumentList.Add("-contrast-stretch");
+            start.ArgumentList.Add("3%x3%");
+            start.ArgumentList.Add("-sharpen");
+            start.ArgumentList.Add("0x1");
+            start.ArgumentList.Add(output);
+
+            using var process = Process.Start(start);
+            if (process is null)
+                return null;
+
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(12));
+            try
+            {
+                await process.WaitForExitAsync(timeout.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                try { process.Kill(true); } catch { }
+                return null;
+            }
+
+            return process.ExitCode == 0 && File.Exists(output)
+                ? output
+                : null;
+        }
+        catch
+        {
+            try { File.Delete(output); } catch { }
+            return null;
+        }
+    }
+
+    private static string? FindImageMagickExecutable()
+    {
+        var configured = Environment.GetEnvironmentVariable("GARAGELOG_IMAGEMAGICK_PATH");
+        if (!string.IsNullOrWhiteSpace(configured))
+            return configured;
+
+        var candidates = OperatingSystem.IsWindows()
+            ? new[]
+            {
+                @"C:\Program Files\ImageMagick-7.1.1-Q16-HDRI\magick.exe",
+                @"C:\Program Files\ImageMagick-7.1.1-Q16\magick.exe",
+                "magick.exe"
+            }
+            : new[]
+            {
+                "/usr/bin/convert",
+                "/usr/local/bin/convert",
+                "/usr/bin/magick",
+                "/usr/local/bin/magick"
+            };
+
+        foreach (var candidate in candidates)
+        {
+            if (Path.IsPathRooted(candidate) && File.Exists(candidate))
+                return candidate;
+        }
+
+        return OperatingSystem.IsWindows() ? "magick" : "convert";
     }
 
     private static string FindTesseractExecutable()

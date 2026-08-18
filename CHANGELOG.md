@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.9 - Pump display OCR and mobile receipt review
+
+- Added pump-display vs paper-receipt capture types for GarageLog Mobile uploads.
+- Added pump-specific multi-pass OCR with numeric-focused Tesseract passes.
+- Added optional ImageMagick preprocessing for photographed pump displays; the Docker image now includes ImageMagick.
+- Stores the mobile capture type on pending receipt documents for clearer review.
+- Pending mobile receipts now show an explicit OCR processing state and do not allow approval until OCR completes.
+
 
 
 ## 0.8.8
