@@ -289,7 +289,7 @@ app.Use(async (context, next) =>
     await next();
 });
 app.UseAuthorization();
-ApiTokenFeature.MapEndpoints(app, connectionString, GarageLogVersion);
+ApiTokenFeature.MapEndpoints(app, connectionString, GarageLogVersion, vehiclesDirectory);
 
 app.MapGet("/api/auth/session", async (HttpContext context) =>
 {

@@ -157,7 +157,7 @@ static class ApiTokenFeature
         await alter.ExecuteNonQueryAsync();
     }
 
-    public static void MapEndpoints(WebApplication app, string connectionString, string applicationVersion)
+    public static void MapEndpoints(WebApplication app, string connectionString, string applicationVersion, string vehiclesDirectory)
     {
         app.MapGet("/api/api-tokens", async () =>
         {
@@ -260,6 +260,35 @@ static class ApiTokenFeature
 
             var vehicles = await ReadVehicleSummariesAsync(connectionString);
             return Results.Ok(new { vehicles });
+        }).AllowAnonymous();
+
+        app.MapGet("/api/mobile/vehicles/{vehicleId}/image", async (
+            string vehicleId,
+            HttpContext context) =>
+        {
+            var token = await AuthenticateBearerAsync(connectionString, context, "vehicles:read");
+            if (token is null)
+                return Results.Unauthorized();
+
+            var vehicles = await ReadVehicleSummariesAsync(connectionString);
+            var vehicle = vehicles.FirstOrDefault(item => item.Id == vehicleId);
+            if (vehicle is null || string.IsNullOrWhiteSpace(vehicle.ImageStoredName))
+                return Results.NotFound();
+
+            var safeName = Path.GetFileName(vehicle.ImageStoredName);
+            var path = Path.Combine(vehiclesDirectory, safeName);
+            if (!File.Exists(path))
+                return Results.NotFound();
+
+            var contentType = Path.GetExtension(path).ToLowerInvariant() switch
+            {
+                ".png" => "image/png",
+                ".webp" => "image/webp",
+                ".jpg" or ".jpeg" => "image/jpeg",
+                _ => "application/octet-stream"
+            };
+
+            return Results.File(path, contentType, enableRangeProcessing: true);
         }).AllowAnonymous();
 
         app.MapGet("/api/mobile/obd-devices/{deviceId}", async (
@@ -1049,6 +1078,12 @@ static class ApiTokenFeature
             if (string.IsNullOrWhiteSpace(name))
                 name = "GarageLog vehicle";
 
+            // Match the full vehicle title shown by the GarageLog web UI.
+            var trim = JsonString(vehicle["trim"]);
+            if (!string.IsNullOrWhiteSpace(trim) &&
+                !name.EndsWith(trim, StringComparison.OrdinalIgnoreCase))
+                name = $"{name} {trim}".Trim();
+
             var vin = NormalizeVin(JsonString(vehicle["vin"]));
             var maskedVin = string.IsNullOrWhiteSpace(vin)
                 ? null
@@ -1060,6 +1095,8 @@ static class ApiTokenFeature
                 year,
                 make,
                 model,
+                JsonString(vehicle["type"]),
+                JsonString(vehicle["imageStoredName"]),
                 vin,
                 maskedVin,
                 JsonDouble(vehicle["mileage"]),
@@ -2055,14 +2092,23 @@ static class ApiTokenFeature
 
     private static string VehicleDisplayName(JsonObject vehicle)
     {
-        var explicitName = JsonString(vehicle["name"]);
-        if (!string.IsNullOrWhiteSpace(explicitName))
-            return explicitName;
+        var name = JsonString(vehicle["name"]);
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            var parts = new[] { JsonString(vehicle["year"]), JsonString(vehicle["make"]), JsonString(vehicle["model"]) }
+                .Where(part => !string.IsNullOrWhiteSpace(part));
+            name = string.Join(" ", parts);
+        }
 
-        var parts = new[] { JsonString(vehicle["year"]), JsonString(vehicle["make"]), JsonString(vehicle["model"]) }
-            .Where(part => !string.IsNullOrWhiteSpace(part));
-        var name = string.Join(" ", parts);
-        return string.IsNullOrWhiteSpace(name) ? "GarageLog vehicle" : name;
+        if (string.IsNullOrWhiteSpace(name))
+            name = "GarageLog vehicle";
+
+        var trim = JsonString(vehicle["trim"]);
+        if (!string.IsNullOrWhiteSpace(trim) &&
+            !name.EndsWith(trim, StringComparison.OrdinalIgnoreCase))
+            name = $"{name} {trim}".Trim();
+
+        return name;
     }
 
     private static string FormatFileSize(long bytes)
@@ -2591,6 +2637,8 @@ sealed record GarageVehicleSummary(
     string Year,
     string Make,
     string Model,
+    string Type,
+    string? ImageStoredName,
     string? Vin,
     string? MaskedVin,
     double Mileage,

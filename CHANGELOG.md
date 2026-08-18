@@ -1,6 +1,18 @@
 # Changelog
 
 
+
+## 0.8.8
+
+- Mobile vehicle summaries now use the same full vehicle title shown in GarageLog, including trim.
+- Retains the 0.8.7 mobile vehicle type and authenticated vehicle-image support required by GarageLog Mobile 0.3.0.
+
+## 0.8.7 - Mobile vehicle image support
+
+- Extended the mobile vehicle list with vehicle type and stored-image metadata.
+- Added authenticated mobile vehicle-image retrieval so GarageLog Mobile can show the same uploaded vehicle image as the server.
+
+
 ## 0.8.6 - Mobile receipt and manual mileage integration
 
 - Added authenticated mobile odometer updates that write to the selected GarageLog vehicle and mileage history.
