@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.10 - Seven-segment pump reader
+
+- Added a dedicated OpenCV-based seven-segment reader for common dual-display fuel pumps instead of relying on Tesseract to interpret segmented digits.
+- The pump reader extracts sale amount and gallons independently, validates the implied price per gallon, and feeds high-confidence values into the existing pending-review workflow.
+- Tesseract remains available for searchable text and as the fallback for pump layouts that the seven-segment reader cannot identify.
+- Pump review fields no longer present failed OCR zeros as detected values; missing values stay blank and show a clear manual-entry/retake message.
+- Docker now includes the OpenCV runtime required by the specialized pump reader.
+
 ## 0.8.9 - Pump display OCR and mobile receipt review
 
 - Added pump-display vs paper-receipt capture types for GarageLog Mobile uploads.

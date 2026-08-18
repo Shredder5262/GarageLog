@@ -751,9 +751,37 @@ static class ApiTokenFeature
                 var extraction = captureType == "pump"
                     ? ExtractPumpDisplayDetails(ocr.Text)
                     : ExtractFuelReceiptDetails(ocr.Text);
-                var documentOcrStatus = ocr.Status switch
+
+                PumpSevenSegmentRead? sevenSegment = null;
+                if (captureType == "pump")
                 {
-                    "complete" when !string.IsNullOrWhiteSpace(ocr.Text) => "indexed",
+                    sevenSegment = await TryReadPumpSevenSegmentAsync(fullPath);
+                    if (sevenSegment is not null)
+                    {
+                        extraction = new FuelReceiptExtraction(
+                            sevenSegment.Gallons,
+                            sevenSegment.Amount,
+                            extraction.Merchant,
+                            sevenSegment.PricePerGallon,
+                            sevenSegment.Confidence);
+                    }
+                }
+
+                var effectiveOcrText = ocr.Text ?? "";
+                var effectiveOcrStatus = ocr.Status;
+                if (sevenSegment is not null)
+                {
+                    var sevenSegmentText =
+                        $"Pump display amount {sevenSegment.Amount:0.00}; gallons {sevenSegment.Gallons:0.####}; price per gallon {sevenSegment.PricePerGallon:0.###}.";
+                    effectiveOcrText = string.IsNullOrWhiteSpace(effectiveOcrText)
+                        ? sevenSegmentText
+                        : $"{effectiveOcrText}{Environment.NewLine}{sevenSegmentText}";
+                    effectiveOcrStatus = "complete";
+                }
+
+                var documentOcrStatus = effectiveOcrStatus switch
+                {
+                    "complete" when !string.IsNullOrWhiteSpace(effectiveOcrText) => "indexed",
                     "complete" => "empty",
                     "unavailable" => "needs-ocr",
                     _ => "error"
@@ -763,8 +791,8 @@ static class ApiTokenFeature
                     connectionString,
                     documentId,
                     documentOcrStatus,
-                    ocr.Status,
-                    ocr.Text,
+                    effectiveOcrStatus,
+                    effectiveOcrText,
                     extraction);
 
                 var message = documentOcrStatus switch
@@ -2266,6 +2294,78 @@ static class ApiTokenFeature
         }
     }
 
+    private static async Task<PumpSevenSegmentRead?> TryReadPumpSevenSegmentAsync(string imagePath)
+    {
+        var configuredScript = Environment.GetEnvironmentVariable("GARAGELOG_PUMP_SEVEN_SEGMENT_SCRIPT");
+        var scriptPath = !string.IsNullOrWhiteSpace(configuredScript)
+            ? configuredScript
+            : Path.Combine(AppContext.BaseDirectory, "Tools", "pump_seven_segment.py");
+        if (!File.Exists(scriptPath))
+            return null;
+
+        var python = Environment.GetEnvironmentVariable("GARAGELOG_PYTHON_PATH");
+        if (string.IsNullOrWhiteSpace(python))
+            python = OperatingSystem.IsWindows() ? "python.exe" : "/usr/bin/python3";
+
+        try
+        {
+            var start = new ProcessStartInfo
+            {
+                FileName = python,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            start.ArgumentList.Add(scriptPath);
+            start.ArgumentList.Add(imagePath);
+
+            using var process = Process.Start(start);
+            if (process is null)
+                return null;
+
+            var stdoutTask = process.StandardOutput.ReadToEndAsync();
+            var stderrTask = process.StandardError.ReadToEndAsync();
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            try
+            {
+                await process.WaitForExitAsync(timeout.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                try { process.Kill(true); } catch { }
+                return null;
+            }
+
+            var stdout = (await stdoutTask).Trim();
+            _ = await stderrTask;
+            if (process.ExitCode != 0 || string.IsNullOrWhiteSpace(stdout))
+                return null;
+
+            var json = JsonNode.Parse(stdout) as JsonObject;
+            if (json?["success"]?.GetValue<bool>() != true)
+                return null;
+
+            var amountValue = JsonDouble(json["amount"]);
+            var gallonsValue = JsonDouble(json["gallons"]);
+            var priceValue = JsonDouble(json["pricePerGallon"]);
+            if (amountValue <= 0 || gallonsValue <= 0 || priceValue <= 0)
+                return null;
+
+            return new PumpSevenSegmentRead(
+                (decimal)amountValue,
+                (decimal)gallonsValue,
+                (decimal)priceValue,
+                string.IsNullOrWhiteSpace(JsonString(json["confidence"]))
+                    ? "medium"
+                    : JsonString(json["confidence"]));
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     private static Task<(string Status, string? Text)> RunFuelOcrAsync(string imagePath) =>
         RunFuelOcrAsync(imagePath, "receipt");
 
@@ -3040,6 +3140,12 @@ sealed record FuelReceiptExtraction(
     string? Merchant,
     decimal? PricePerGallon,
     string? Confidence);
+
+sealed record PumpSevenSegmentRead(
+    decimal Amount,
+    decimal Gallons,
+    decimal PricePerGallon,
+    string Confidence);
 
 sealed record TelemetryTripUploadRequest(
     string? TripId,

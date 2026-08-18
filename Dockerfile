@@ -22,6 +22,7 @@ RUN apt-get update \
         libreoffice-core \
         libreoffice-writer \
         poppler-utils \
+        python3-opencv \
         qrencode \
         tesseract-ocr \
         tesseract-ocr-eng \
