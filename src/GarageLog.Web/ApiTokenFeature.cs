@@ -772,7 +772,7 @@ static class ApiTokenFeature
                 if (sevenSegment is not null)
                 {
                     var sevenSegmentText =
-                        $"Pump display amount {sevenSegment.Amount:0.00}; gallons {sevenSegment.Gallons:0.####}; price per gallon {sevenSegment.PricePerGallon:0.###}.";
+                        $"Pump display amount {sevenSegment.Amount:0.00}; gallons {sevenSegment.Gallons:0.####}; derived price per gallon {sevenSegment.PricePerGallon:0.###}.";
                     effectiveOcrText = string.IsNullOrWhiteSpace(effectiveOcrText)
                         ? sevenSegmentText
                         : $"{effectiveOcrText}{Environment.NewLine}{sevenSegmentText}";

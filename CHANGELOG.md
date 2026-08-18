@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.8.11 - Transaction-aware pump reading
+
+- Pump-display OCR now targets exactly two completed-transaction values: Total/This Sale and Gallons.
+- Price per gallon is derived from total sale divided by gallons and used only as a sanity check; GarageLog does not treat pump grade-price boards as transaction data.
+- Added support for both traditional stacked sale/gallons LCD windows and newer shared transaction panels.
+- Added perspective correction and automatic bright-on-dark vs dark-on-light display handling for seven-segment panels.
+- Replaced the previous segment-contour-only decoder with digit grouping plus fixed segment probes, which is more tolerant of varied segment thickness and display color.
+- Grade selection / price-per-gallon boards are rejected when a completed sale-and-gallons pair cannot be confidently established.
+- Tightened transaction validation to prefer manual review over accepting a mathematically plausible but suspicious OCR pair.
+
 ## 0.8.10 - Seven-segment pump reader
 
 - Added a dedicated OpenCV-based seven-segment reader for common dual-display fuel pumps instead of relying on Tesseract to interpret segmented digits.
