@@ -402,6 +402,10 @@ function fuelEconomyPoints(vehicleId=state.activeVehicleId){
  }
  return points
 }
+function vehicleAverageMpg(vehicleId){
+ const points=fuelEconomyPoints(vehicleId);
+ return points.length?points.reduce((sum,point)=>sum+Number(point.value||0),0)/points.length:null
+}
 function filterFuelEconomyPoints(points,range,customMonths=6){const now=new Date(),year=now.getFullYear();if(range==='this-year')return points.filter(point=>point.date.getFullYear()===year);if(range==='last-year')return points.filter(point=>point.date.getFullYear()===year-1);const months=range==='3-months'?3:range==='6-months'?6:range==='custom'?Math.max(1,Number(customMonths)||6):null;if(!months)return [...points];const start=new Date(now.getFullYear(),now.getMonth()-months+1,1,0,0,0,0);return points.filter(point=>point.date>=start&&point.date<=now)}
 function fuelAxisModel(points){const values=points.map(point=>Number(point.value)).filter(Number.isFinite);if(!values.length)return{min:0,max:30,ticks:[30,24,18,12,6,0]};let min=Math.max(0,Math.floor((Math.min(...values)-2)/5)*5),max=Math.ceil((Math.max(...values)+2)/5)*5;if(max-min<10){const midpoint=(max+min)/2;min=Math.max(0,Math.floor((midpoint-5)/5)*5);max=Math.ceil((midpoint+5)/5)*5}if(max<=min)max=min+10;return{min,max,ticks:Array.from({length:6},(_,index)=>max-(max-min)*(index/5))}}
 function yearExpenses(vehicleId=state.activeVehicleId,year=new Date().getFullYear()){return recordsFor('expenses',vehicleId).filter(item=>recordYear(item.date)===Number(year))}
@@ -1597,8 +1601,8 @@ function garage(){
  const activeVehicles=activeFleetVehicles(),archivedVehicles=state.vehicles.filter(isVehicleArchived);
  const allCounts=activeVehicles.reduce((acc,v)=>{const c=maintenanceCounts(v.id);acc.due+=c.overdue+c.due;return acc},{due:0});
  const totalYearly=activeVehicles.reduce((sum,v)=>sum+expenseTotals(v.id).yearly,0);
- const mpgValues=activeVehicles.map(v=>Number(v.metrics?.averageMpg||0)).filter(Boolean);
- const avgMpg=mpgValues.length?mpgValues.reduce((a,b)=>a+b,0)/mpgValues.length:0;
+ const mpgValues=activeVehicles.map(v=>vehicleAverageMpg(v.id)).filter(value=>Number.isFinite(value)&&value>0);
+ const avgMpg=mpgValues.length?mpgValues.reduce((a,b)=>a+b,0)/mpgValues.length:null;
  const counts={AllVehicles:state.vehicles.length,Cars:state.vehicles.filter(v=>v.type==='Car').length,Trucks:state.vehicles.filter(v=>v.type==='Truck').length,Motorcycles:state.vehicles.filter(v=>v.type==='Motorcycle').length,Trailers:state.vehicles.filter(v=>v.type==='Trailer').length};
  const pageActions=`<div class="page-actions garage-page-actions"><button class="secondary compact-action" onclick="goPage('Documents')">${svg('upload')} Import Records</button>${primary('Add Vehicle',"openModal('vehicle-add')",'plus')}</div>`;
  return pageHead('My Garage','Manage vehicles, mileage, and service status.',pageActions)+`
@@ -1655,7 +1659,7 @@ function garageVehicleCard(vehicle){
    </div>
    <div class="garage-card-metrics">
      <div>${svg('calendar')}<span>Last Service<strong>${lastService?shortDate(lastService.date):'Not recorded'}</strong></span></div>
-     <div>${svg('fuel')}<span>MPG (avg)<strong>${Number(vehicle.metrics?.averageMpg||0)?Number(vehicle.metrics.averageMpg).toFixed(1):'—'}</strong></span></div>
+     <div>${svg('fuel')}<span>MPG (avg)<strong>${vehicleAverageMpg(vehicle.id)?.toFixed(1)||'—'}</strong></span></div>
      <div>${svg('dollar')}<span>Yearly Cost<strong>${money(totals.yearly)}</strong></span></div>
    </div>
    <div class="garage-card-actions">

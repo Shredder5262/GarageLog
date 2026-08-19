@@ -2068,6 +2068,7 @@
 .expense-entry-section-heading h5{margin:0;font-size:13px}
 .expense-entry-grid{display:grid;grid-template-columns:1fr 1fr;gap:11px 12px}
 .expense-entry-field{display:grid;gap:5px;font-size:11px;font-weight:650;color:#334155}
+#expenseCoverageField[hidden],#expenseCoveredValueField[hidden]{display:none!important}
 .expense-entry-field>span{display:flex;align-items:center;justify-content:space-between}
 .expense-entry-field input,.expense-entry-field select,.expense-entry-field textarea{width:100%;border:1px solid #d6dee9;border-radius:8px;padding:9px 10px;background:#fff;color:#172033;font-size:12px;outline:0;transition:border-color .15s,box-shadow .15s}
 .expense-entry-field input:focus,.expense-entry-field select:focus,.expense-entry-field textarea:focus{border-color:#60a5fa;box-shadow:0 0 0 3px #dbeafe}
