@@ -11,7 +11,7 @@ RUN dotnet publish src/GarageLog.Web/GarageLog.Web.csproj \
     --no-restore \
     /p:UseAppHost=false
 
-FROM mcr.microsoft.com/dotnet/aspnet:8.0-bookworm-slim AS final
+FROM mcr.microsoft.com/dotnet/aspnet:9.0-bookworm-slim AS final
 USER root
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
