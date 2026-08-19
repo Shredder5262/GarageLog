@@ -2294,6 +2294,48 @@ static class ApiTokenFeature
         }
     }
 
+    private static void CleanupStalePumpAnalysisArtifacts()
+    {
+        // Pump analysis is intentionally ephemeral. Normal requests delete every
+        // generated artifact in finally blocks; this sweep handles leftovers from
+        // a killed container/process so /tmp never becomes a second image store.
+        var tempRoot = Path.GetTempPath();
+        var cutoff = DateTime.UtcNow.AddMinutes(-30);
+
+        try
+        {
+            foreach (var file in Directory.EnumerateFiles(
+                         tempRoot,
+                         "garagelog-pump-ocr-*",
+                         SearchOption.TopDirectoryOnly))
+            {
+                try
+                {
+                    if (File.GetLastWriteTimeUtc(file) < cutoff)
+                        File.Delete(file);
+                }
+                catch { }
+            }
+
+            foreach (var directory in Directory.EnumerateDirectories(
+                         tempRoot,
+                         "garagelog-pump-analysis-*",
+                         SearchOption.TopDirectoryOnly))
+            {
+                try
+                {
+                    if (Directory.GetLastWriteTimeUtc(directory) < cutoff)
+                        Directory.Delete(directory, recursive: true);
+                }
+                catch { }
+            }
+        }
+        catch
+        {
+            // Cleanup is best-effort and must never block a receipt upload.
+        }
+    }
+
     private static async Task<PumpSevenSegmentRead?> TryReadPumpSevenSegmentAsync(string imagePath)
     {
         var configuredScript = Environment.GetEnvironmentVariable("GARAGELOG_PUMP_SEVEN_SEGMENT_SCRIPT");
@@ -2307,15 +2349,23 @@ static class ApiTokenFeature
         if (string.IsNullOrWhiteSpace(python))
             python = OperatingSystem.IsWindows() ? "python.exe" : "/usr/bin/python3";
 
+        CleanupStalePumpAnalysisArtifacts();
+        var analysisDirectory = Path.Combine(
+            Path.GetTempPath(),
+            $"garagelog-pump-analysis-{Guid.NewGuid():N}");
+
         try
         {
+            Directory.CreateDirectory(analysisDirectory);
+
             var start = new ProcessStartInfo
             {
                 FileName = python,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
-                CreateNoWindow = true
+                CreateNoWindow = true,
+                WorkingDirectory = analysisDirectory
             };
             start.ArgumentList.Add(scriptPath);
             start.ArgumentList.Add(imagePath);
@@ -2326,7 +2376,7 @@ static class ApiTokenFeature
 
             var stdoutTask = process.StandardOutput.ReadToEndAsync();
             var stderrTask = process.StandardError.ReadToEndAsync();
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(25));
             try
             {
                 await process.WaitForExitAsync(timeout.Token);
@@ -2364,6 +2414,20 @@ static class ApiTokenFeature
         {
             return null;
         }
+        finally
+        {
+            // The production reader works in memory. If a future decoder writes
+            // diagnostic crops or masks, they are confined here and removed as
+            // soon as the result has been determined.
+            try
+            {
+                if (Directory.Exists(analysisDirectory))
+                    Directory.Delete(analysisDirectory, recursive: true);
+            }
+            catch { }
+
+            CleanupStalePumpAnalysisArtifacts();
+        }
     }
 
     private static Task<(string Status, string? Text)> RunFuelOcrAsync(string imagePath) =>
@@ -2375,6 +2439,8 @@ static class ApiTokenFeature
     {
         if (!string.Equals(captureType, "pump", StringComparison.OrdinalIgnoreCase))
             return await RunTesseractPassAsync(imagePath, "6");
+
+        CleanupStalePumpAnalysisArtifacts();
 
         // Pump LCD/LED displays are visually very different from printed receipts.
         // Run several sparse/numeric-friendly passes and combine their output so
@@ -2429,6 +2495,7 @@ static class ApiTokenFeature
             {
                 try { File.Delete(processedPath); } catch { }
             }
+            CleanupStalePumpAnalysisArtifacts();
         }
     }
 

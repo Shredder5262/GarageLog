@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.8.12 - Pump OCR lab reader integration and temp cleanup
+
+- Replaced the earlier pump seven-segment reader with the standalone lab-tuned transaction reader used during field-image testing.
+- Preserves conservative recognition: only completed-sale amount and gallons are returned; grade prices are validation context only.
+- Keeps difficult/extreme pump photos in manual-review fallback instead of forcing uncertain values.
+- Runs pump analysis in an isolated temporary working directory and removes it after each read.
+- Cleans stale GarageLog pump-analysis and ImageMagick preprocessing artifacts so temporary OCR images do not accumulate.
+
+
 ## 0.8.11 - Transaction-aware pump reading
 
 - Pump-display OCR now targets exactly two completed-transaction values: Total/This Sale and Gallons.
