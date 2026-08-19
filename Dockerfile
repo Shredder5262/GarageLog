@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-FROM mcr.microsoft.com/dotnet/sdk:8.0-bookworm-slim AS build
+FROM mcr.microsoft.com/dotnet/sdk:9.0-bookworm-slim AS build
 WORKDIR /src
 COPY Directory.Build.props VERSION ./
 COPY src/GarageLog.Web/GarageLog.Web.csproj src/GarageLog.Web/
