@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.8.14 - Real pump photo OCR path
+
+- Added a conservative first-pass reader for large reflective pump faces captured directly by a phone camera.
+- The new path localizes the transaction region before seven-segment decoding, reducing full-photo CPU cost while preserving the original uploaded image.
+- Added sparse-consensus validation for reflective displays; the first real production fixture now reads `$95.27 / 23.243 gal` at medium confidence without loosening the general false-positive rules.
+- Pump captures now run the specialized seven-segment reader before generic Tesseract; Tesseract is only used as a fallback when the specialized reader cannot establish a safe result.
+- Increased the background pump-reader timeout to 60 seconds and added explicit method, timing, exit/error, and rejection logging.
+- Pump analysis remains in-memory/temporary and GarageLog continues deleting temporary OCR artifacts after processing.
+
 ## 0.8.13 - Mobile receipt upload/OCR separation
 
 - A successfully stored mobile fuel photo now returns success immediately instead of waiting for OCR to finish.

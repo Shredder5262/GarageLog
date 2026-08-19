@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""GarageLog fuel-pump transaction display reader - lab tuned-v9.
+"""GarageLog fuel-pump transaction display reader - lab tuned-v12.
 
 
 This reader is intentionally transaction-specific. It looks for a completed-sale
@@ -1872,7 +1872,167 @@ def _red_fused_transaction(image):
         "redCandidate": {"amount": r["amount"], "gallons": r["gallons"], "score": round(float(r.get("score",0)),4)},
     }
 
+
+def _reflective_sparse_consensus(candidates):
+    """Conservative consensus for large reflective real-world pump displays.
+
+    Phone photos of glossy black pump faces can preserve the correct seven-
+    segment pair in only a few high-quality top-hat variants while reflections
+    produce many weaker alternatives.  Accept only when three independent
+    horizontal crop offsets agree exactly on both rows, both rows were decoded
+    with the strongest top-hat mask, and the winning group is clearly separated
+    from the next repeated alternative.
+    """
+    if not candidates:
+        return None
+
+    groups = {}
+    for item in candidates:
+        key = (round(float(item["amount"]), 2), round(float(item["gallons"]), 4))
+        groups.setdefault(key, []).append(item)
+
+    ranked = []
+    for key, items in groups.items():
+        strong = [
+            item for item in items
+            if item.get("amountMask") == "tophat-50"
+            and item.get("gallonsMask") == "tophat-50"
+        ]
+        mean_score = float(np.mean([float(item["score"]) for item in items]))
+        distinct_left = len({round(float(item.get("left", 0.0)), 2) for item in strong})
+        ranked.append({
+            "key": key,
+            "items": items,
+            "votes": len(items),
+            "strongVotes": len(strong),
+            "distinctLeft": distinct_left,
+            "meanScore": mean_score,
+        })
+
+    ranked.sort(key=lambda item: (item["meanScore"], -item["votes"]))
+    eligible = [
+        item for item in ranked
+        if item["votes"] >= 3
+        and item["strongVotes"] >= 3
+        and item["distinctLeft"] >= 3
+        and item["meanScore"] <= 1.90
+    ]
+    if not eligible:
+        return None
+
+    winner = eligible[0]
+    repeated_rivals = [
+        item for item in ranked
+        if item["key"] != winner["key"] and item["votes"] >= 2
+    ]
+    rival_score = min(
+        [item["meanScore"] for item in repeated_rivals],
+        default=9.0,
+    )
+    margin = rival_score - winner["meanScore"]
+    if margin < 0.20:
+        return None
+
+    amount, gallons = winner["key"]
+    if not valid_derived_ppg(amount, gallons):
+        return None
+
+    return {
+        "amount": amount,
+        "gallons": gallons,
+        "votes": winner["votes"],
+        "score": round(winner["meanScore"], 4),
+        "margin": round(margin, 4),
+    }
+
+
+def read_large_reflective_transaction(image):
+    """Fast first-pass reader for direct phone photos of glossy pump faces.
+
+    A full-resolution camera image is expensive for the general v11 search.
+    Large black pump faces are localized cheaply, then only the transaction-
+    display portion is normalized and decoded.  This path is deliberately
+    narrow; if its strong sparse consensus is absent, the existing reader
+    continues unchanged.
+    """
+    image_h, image_w = image.shape[:2]
+    if image_h < 700 or image_w < 900:
+        return None
+
+    for _, bbox, _ in panel_candidates(image)[:3]:
+        x, y, w, h = bbox
+        area_fraction = (w * h) / float(image_h * image_w)
+        aspect = w / float(max(h, 1))
+        if area_fraction < 0.18 or aspect < 2.60:
+            continue
+
+        panel = image[y:min(image_h, y + h), x:min(image_w, x + w)]
+        if panel.size == 0:
+            continue
+        gray = cv2.cvtColor(panel, cv2.COLOR_BGR2GRAY)
+        if float(np.mean(gray)) > 120.0:
+            continue
+
+        # Typical direct pump captures include labels on the left and the two
+        # transaction rows across the center/right. Keep enough surrounding
+        # panel to preserve row geometry while excluding most irrelevant face.
+        x1 = int(round(w * 0.317))
+        x2 = int(round(w * 0.879))
+        y1 = int(round(h * 0.052))
+        y2 = int(round(h * 0.892))
+        focus = panel[y1:y2, x1:x2]
+        if focus.size == 0 or focus.shape[0] < 120 or focus.shape[1] < 240:
+            continue
+
+        # Normalize very large camera crops to the scale where the segment
+        # decoder was validated. A light JPEG round-trip suppresses sensor/
+        # reflection micro-texture without creating persistent analysis files.
+        if focus.shape[1] > 1200:
+            scale = 1200.0 / float(focus.shape[1])
+            focus = cv2.resize(
+                focus,
+                (1200, max(1, int(round(focus.shape[0] * scale)))),
+                interpolation=cv2.INTER_AREA,
+            )
+        ok, encoded = cv2.imencode(
+            ".jpg",
+            focus,
+            [int(cv2.IMWRITE_JPEG_QUALITY), 95],
+        )
+        if ok:
+            normalized = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+            if normalized is not None:
+                focus = normalized
+
+        candidates = _top_shared_candidates(focus, 40)
+        consensus = _reflective_sparse_consensus(candidates)
+        if consensus is None:
+            continue
+
+        amount = float(consensus["amount"])
+        gallons = float(consensus["gallons"])
+        return {
+            "success": True,
+            "method": "large-reflective-panel-sparse-consensus",
+            "amount": round(amount, 2),
+            "gallons": round(gallons, 4),
+            "pricePerGallon": round(amount / gallons, 3),
+            "confidence": "medium",
+            "consensusVotes": int(consensus["votes"]),
+            "consensusScore": consensus["score"],
+            "consensusMargin": consensus["margin"],
+        }
+
+    return None
+
 def read_transaction(image):
+    # Direct high-resolution pump photos get a narrow, fast reflective-panel
+    # pass before the broader lab reader. If it cannot establish a safe
+    # consensus, all existing v11 behavior remains available unchanged.
+    reflective = read_large_reflective_transaction(image)
+    if reflective is not None:
+        return reflective
+
     grade_prices = detect_grade_prices(image)
 
     # 1) Preserve the known-good traditional stacked-window path.
@@ -2082,7 +2242,7 @@ def read_transaction(image):
             })
     return {
         "success": False,
-        "method": "transaction-seven-segment-v11",
+        "method": "transaction-seven-segment-v12",
         "reason": "completed-sale-and-gallons-not-confidently-detected",
         "candidates": compact[:8],
     }

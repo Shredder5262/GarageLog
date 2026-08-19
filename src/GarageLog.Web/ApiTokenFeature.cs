@@ -1922,24 +1922,36 @@ static class ApiTokenFeature
         await MobileReceiptOcrGate.WaitAsync();
         try
         {
-            var ocr = await RunFuelOcrAsync(fullPath, captureType);
-            var extraction = captureType == "pump"
-                ? ExtractPumpDisplayDetails(ocr.Text)
-                : ExtractFuelReceiptDetails(ocr.Text);
-
             PumpSevenSegmentRead? sevenSegment = null;
+            (string Status, string? Text) ocr;
+            FuelReceiptExtraction extraction;
+
             if (captureType == "pump")
             {
-                sevenSegment = await TryReadPumpSevenSegmentAsync(fullPath);
+                // The lab-tuned seven-segment reader is the primary pump-value
+                // recognizer. Generic Tesseract is a fallback only when the
+                // specialized reader cannot establish a safe transaction pair.
+                sevenSegment = await TryReadPumpSevenSegmentAsync(fullPath, app.Logger);
                 if (sevenSegment is not null)
                 {
+                    ocr = ("complete", null);
                     extraction = new FuelReceiptExtraction(
                         sevenSegment.Gallons,
                         sevenSegment.Amount,
-                        extraction.Merchant,
+                        null,
                         sevenSegment.PricePerGallon,
                         sevenSegment.Confidence);
                 }
+                else
+                {
+                    ocr = await RunFuelOcrAsync(fullPath, captureType);
+                    extraction = ExtractPumpDisplayDetails(ocr.Text);
+                }
+            }
+            else
+            {
+                ocr = await RunFuelOcrAsync(fullPath, captureType);
+                extraction = ExtractFuelReceiptDetails(ocr.Text);
             }
 
             var effectiveOcrText = ocr.Text ?? "";
@@ -2411,14 +2423,19 @@ static class ApiTokenFeature
         }
     }
 
-    private static async Task<PumpSevenSegmentRead?> TryReadPumpSevenSegmentAsync(string imagePath)
+    private static async Task<PumpSevenSegmentRead?> TryReadPumpSevenSegmentAsync(
+        string imagePath,
+        ILogger logger)
     {
         var configuredScript = Environment.GetEnvironmentVariable("GARAGELOG_PUMP_SEVEN_SEGMENT_SCRIPT");
         var scriptPath = !string.IsNullOrWhiteSpace(configuredScript)
             ? configuredScript
             : Path.Combine(AppContext.BaseDirectory, "Tools", "pump_seven_segment.py");
         if (!File.Exists(scriptPath))
+        {
+            logger.LogWarning("Pump reader script was not found at {ScriptPath}.", scriptPath);
             return null;
+        }
 
         var python = Environment.GetEnvironmentVariable("GARAGELOG_PYTHON_PATH");
         if (string.IsNullOrWhiteSpace(python))
@@ -2428,6 +2445,7 @@ static class ApiTokenFeature
         var analysisDirectory = Path.Combine(
             Path.GetTempPath(),
             $"garagelog-pump-analysis-{Guid.NewGuid():N}");
+        var stopwatch = Stopwatch.StartNew();
 
         try
         {
@@ -2447,11 +2465,14 @@ static class ApiTokenFeature
 
             using var process = Process.Start(start);
             if (process is null)
+            {
+                logger.LogWarning("Pump reader process could not be started.");
                 return null;
+            }
 
             var stdoutTask = process.StandardOutput.ReadToEndAsync();
             var stderrTask = process.StandardError.ReadToEndAsync();
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(25));
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
             try
             {
                 await process.WaitForExitAsync(timeout.Token);
@@ -2459,34 +2480,103 @@ static class ApiTokenFeature
             catch (OperationCanceledException)
             {
                 try { process.Kill(true); } catch { }
+                stopwatch.Stop();
+                logger.LogWarning(
+                    "Pump reader timed out after {ElapsedMs} ms for {ImageName}.",
+                    stopwatch.ElapsedMilliseconds,
+                    Path.GetFileName(imagePath));
                 return null;
             }
 
             var stdout = (await stdoutTask).Trim();
-            _ = await stderrTask;
-            if (process.ExitCode != 0 || string.IsNullOrWhiteSpace(stdout))
-                return null;
+            var stderr = (await stderrTask).Trim();
+            stopwatch.Stop();
 
-            var json = JsonNode.Parse(stdout) as JsonObject;
-            if (json?["success"]?.GetValue<bool>() != true)
+            if (process.ExitCode != 0)
+            {
+                logger.LogWarning(
+                    "Pump reader exited with code {ExitCode} after {ElapsedMs} ms. stderr={Stderr}",
+                    process.ExitCode,
+                    stopwatch.ElapsedMilliseconds,
+                    string.IsNullOrWhiteSpace(stderr) ? "<empty>" : stderr);
                 return null;
+            }
+
+            if (string.IsNullOrWhiteSpace(stdout))
+            {
+                logger.LogWarning(
+                    "Pump reader returned no output after {ElapsedMs} ms. stderr={Stderr}",
+                    stopwatch.ElapsedMilliseconds,
+                    string.IsNullOrWhiteSpace(stderr) ? "<empty>" : stderr);
+                return null;
+            }
+
+            JsonObject? json;
+            try
+            {
+                json = JsonNode.Parse(stdout) as JsonObject;
+            }
+            catch (Exception jsonException)
+            {
+                logger.LogWarning(
+                    jsonException,
+                    "Pump reader returned invalid JSON after {ElapsedMs} ms. Output={Output}",
+                    stopwatch.ElapsedMilliseconds,
+                    stdout.Length > 500 ? stdout[..500] : stdout);
+                return null;
+            }
+
+            var method = JsonString(json?["method"]);
+            if (json?["success"]?.GetValue<bool>() != true)
+            {
+                logger.LogInformation(
+                    "Pump reader did not accept a transaction after {ElapsedMs} ms. Method={Method}; Reason={Reason}.",
+                    stopwatch.ElapsedMilliseconds,
+                    string.IsNullOrWhiteSpace(method) ? "unknown" : method,
+                    JsonString(json?["reason"]));
+                return null;
+            }
 
             var amountValue = JsonDouble(json["amount"]);
             var gallonsValue = JsonDouble(json["gallons"]);
             var priceValue = JsonDouble(json["pricePerGallon"]);
             if (amountValue <= 0 || gallonsValue <= 0 || priceValue <= 0)
+            {
+                logger.LogWarning(
+                    "Pump reader returned an invalid numeric result. Method={Method}; Amount={Amount}; Gallons={Gallons}; Ppg={Ppg}.",
+                    method,
+                    amountValue,
+                    gallonsValue,
+                    priceValue);
                 return null;
+            }
+
+            var confidence = string.IsNullOrWhiteSpace(JsonString(json["confidence"]))
+                ? "medium"
+                : JsonString(json["confidence"]);
+
+            logger.LogInformation(
+                "Pump reader accepted {Amount:0.00} / {Gallons:0.####} gal in {ElapsedMs} ms. Method={Method}; Confidence={Confidence}.",
+                amountValue,
+                gallonsValue,
+                stopwatch.ElapsedMilliseconds,
+                string.IsNullOrWhiteSpace(method) ? "unknown" : method,
+                confidence);
 
             return new PumpSevenSegmentRead(
                 (decimal)amountValue,
                 (decimal)gallonsValue,
                 (decimal)priceValue,
-                string.IsNullOrWhiteSpace(JsonString(json["confidence"]))
-                    ? "medium"
-                    : JsonString(json["confidence"]));
+                confidence);
         }
-        catch
+        catch (Exception exception)
         {
+            stopwatch.Stop();
+            logger.LogWarning(
+                exception,
+                "Pump reader failed after {ElapsedMs} ms for {ImageName}.",
+                stopwatch.ElapsedMilliseconds,
+                Path.GetFileName(imagePath));
             return null;
         }
         finally

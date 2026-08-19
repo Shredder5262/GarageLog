@@ -1765,8 +1765,9 @@
 .mobile-receipt-review{display:grid;gap:10px;padding:13px 14px;border:1px solid #fdba74;border-radius:12px;background:#fffaf5}
 .mobile-receipt-review-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:14px}
 .mobile-receipt-review-heading strong{display:block;margin-top:3px;color:#7c2d12}
-.mobile-receipt-review-grid{display:grid;grid-template-columns:1.4fr 1fr 1fr 1fr;gap:9px}
+.mobile-receipt-review-grid{display:grid;grid-template-columns:1.4fr repeat(4,minmax(0,1fr));gap:9px}
 .mobile-receipt-review-grid label{display:grid;gap:5px;font-size:11px;font-weight:750;color:#7c2d12}
+.mobile-receipt-review-grid label small{font-size:10px;line-height:1.35;font-weight:600;color:#9a3412}
 .mobile-receipt-review-grid input{min-width:0;border:1px solid #fed7aa;border-radius:8px;background:#fff;padding:8px 9px;color:#0f172a}
 .mobile-receipt-review-meta{display:flex;align-items:center;gap:14px;flex-wrap:wrap;color:#9a3412;font-size:12px}
 .mobile-receipt-review-meta label{display:flex;align-items:center;gap:7px;font-weight:700}
