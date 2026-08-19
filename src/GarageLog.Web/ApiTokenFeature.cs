@@ -10,6 +10,8 @@ using Microsoft.Data.Sqlite;
 
 static class ApiTokenFeature
 {
+    private static readonly SemaphoreSlim MobileReceiptOcrGate = new(1, 1);
+
     private static readonly HashSet<string> AllowedScopes = new(StringComparer.Ordinal)
     {
         "vehicles:read",
@@ -747,80 +749,41 @@ static class ApiTokenFeature
                     return Results.Conflict(new { error = "GarageLog could not create the pending receipt document." });
                 }
 
-                var ocr = await RunFuelOcrAsync(fullPath, captureType);
-                var extraction = captureType == "pump"
-                    ? ExtractPumpDisplayDetails(ocr.Text)
-                    : ExtractFuelReceiptDetails(ocr.Text);
-
-                PumpSevenSegmentRead? sevenSegment = null;
-                if (captureType == "pump")
-                {
-                    sevenSegment = await TryReadPumpSevenSegmentAsync(fullPath);
-                    if (sevenSegment is not null)
-                    {
-                        extraction = new FuelReceiptExtraction(
-                            sevenSegment.Gallons,
-                            sevenSegment.Amount,
-                            extraction.Merchant,
-                            sevenSegment.PricePerGallon,
-                            sevenSegment.Confidence);
-                    }
-                }
-
-                var effectiveOcrText = ocr.Text ?? "";
-                var effectiveOcrStatus = ocr.Status;
-                if (sevenSegment is not null)
-                {
-                    var sevenSegmentText =
-                        $"Pump display amount {sevenSegment.Amount:0.00}; gallons {sevenSegment.Gallons:0.####}; derived price per gallon {sevenSegment.PricePerGallon:0.###}.";
-                    effectiveOcrText = string.IsNullOrWhiteSpace(effectiveOcrText)
-                        ? sevenSegmentText
-                        : $"{effectiveOcrText}{Environment.NewLine}{sevenSegmentText}";
-                    effectiveOcrStatus = "complete";
-                }
-
-                var documentOcrStatus = effectiveOcrStatus switch
-                {
-                    "complete" when !string.IsNullOrWhiteSpace(effectiveOcrText) => "indexed",
-                    "complete" => "empty",
-                    "unavailable" => "needs-ocr",
-                    _ => "error"
-                };
-
-                await UpdateMobileReceiptOcrAsync(
+                // Upload completion and OCR completion are intentionally separate.
+                // The phone only waits for the original image + pending document to
+                // be persisted. OCR runs against the server-side copy afterward so
+                // an unreadable/slow image cannot turn a successful upload into a
+                // network/socket failure in GarageLog Mobile.
+                _ = Task.Run(() => ProcessMobileReceiptOcrAsync(
+                    app,
                     connectionString,
                     documentId,
-                    documentOcrStatus,
-                    effectiveOcrStatus,
-                    effectiveOcrText,
-                    extraction);
+                    fullPath,
+                    captureType));
 
-                var message = documentOcrStatus switch
-                {
-                    "indexed" when extraction.Amount.HasValue || extraction.Gallons.HasValue =>
-                        "Receipt uploaded to GarageLog as a pending document. OCR suggestions are ready for review.",
-                    "indexed" =>
-                        "Receipt uploaded to GarageLog as a pending document. OCR text is available for review.",
-                    "needs-ocr" =>
-                        "Receipt uploaded to GarageLog as a pending document, but Tesseract OCR is unavailable on this host.",
-                    _ =>
-                        "Receipt uploaded to GarageLog as a pending document. OCR needs review."
-                };
+                app.Logger.LogInformation(
+                    "Mobile receipt {DocumentId} stored successfully; OCR queued ({CaptureType}).",
+                    documentId,
+                    captureType);
 
                 return Results.Ok(new
                 {
+                    success = true,
+                    uploadSuccess = true,
+                    ocrQueued = true,
+                    reviewRequired = true,
                     documentId,
                     vehicleId = vehicle.Id,
                     vehicleName = vehicle.Name,
                     storedName,
                     reviewStatus = "Pending",
                     captureType,
-                    ocrStatus = documentOcrStatus,
-                    gallons = extraction.Gallons,
-                    amount = extraction.Amount,
-                    merchant = extraction.Merchant,
-                    pricePerGallon = extraction.PricePerGallon,
-                    message
+                    ocrStatus = "processing",
+                    gallons = (decimal?)null,
+                    amount = (decimal?)null,
+                    merchant = (string?)null,
+                    pricePerGallon = (decimal?)null,
+                    message = "Photo uploaded to GarageLog as a pending document. OCR is processing in the background; review the receipt in GarageLog when it completes."
                 });
             }
             catch
@@ -1941,6 +1904,118 @@ static class ApiTokenFeature
 
         await transaction.CommitAsync();
         return changed;
+    }
+
+    private static async Task ProcessMobileReceiptOcrAsync(
+        WebApplication app,
+        string connectionString,
+        string documentId,
+        string fullPath,
+        string captureType)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        app.Logger.LogInformation(
+            "Receipt OCR started for {DocumentId} ({CaptureType}).",
+            documentId,
+            captureType);
+
+        await MobileReceiptOcrGate.WaitAsync();
+        try
+        {
+            var ocr = await RunFuelOcrAsync(fullPath, captureType);
+            var extraction = captureType == "pump"
+                ? ExtractPumpDisplayDetails(ocr.Text)
+                : ExtractFuelReceiptDetails(ocr.Text);
+
+            PumpSevenSegmentRead? sevenSegment = null;
+            if (captureType == "pump")
+            {
+                sevenSegment = await TryReadPumpSevenSegmentAsync(fullPath);
+                if (sevenSegment is not null)
+                {
+                    extraction = new FuelReceiptExtraction(
+                        sevenSegment.Gallons,
+                        sevenSegment.Amount,
+                        extraction.Merchant,
+                        sevenSegment.PricePerGallon,
+                        sevenSegment.Confidence);
+                }
+            }
+
+            var effectiveOcrText = ocr.Text ?? "";
+            var effectiveOcrStatus = ocr.Status;
+            if (sevenSegment is not null)
+            {
+                var sevenSegmentText =
+                    $"Pump display amount {sevenSegment.Amount:0.00}; gallons {sevenSegment.Gallons:0.####}; derived price per gallon {sevenSegment.PricePerGallon:0.###}.";
+                effectiveOcrText = string.IsNullOrWhiteSpace(effectiveOcrText)
+                    ? sevenSegmentText
+                    : $"{effectiveOcrText}{Environment.NewLine}{sevenSegmentText}";
+                effectiveOcrStatus = "complete";
+            }
+
+            var documentOcrStatus = effectiveOcrStatus switch
+            {
+                "complete" when !string.IsNullOrWhiteSpace(effectiveOcrText) => "indexed",
+                "complete" => "empty",
+                "unavailable" => "needs-ocr",
+                _ => "error"
+            };
+
+            await UpdateMobileReceiptOcrAsync(
+                connectionString,
+                documentId,
+                documentOcrStatus,
+                effectiveOcrStatus,
+                effectiveOcrText,
+                extraction);
+
+            stopwatch.Stop();
+            var valuesDetected = captureType != "pump" ||
+                (extraction.Amount.HasValue && extraction.Gallons.HasValue);
+
+            app.Logger.LogInformation(
+                "Receipt OCR completed for {DocumentId} in {ElapsedMs} ms. Status={OcrStatus}; ValuesDetected={ValuesDetected}.",
+                documentId,
+                stopwatch.ElapsedMilliseconds,
+                documentOcrStatus,
+                valuesDetected);
+        }
+        catch (Exception ocrException)
+        {
+            stopwatch.Stop();
+            app.Logger.LogWarning(
+                ocrException,
+                "Receipt {DocumentId} uploaded successfully, but OCR failed after {ElapsedMs} ms. The receipt remains pending for manual review.",
+                documentId,
+                stopwatch.ElapsedMilliseconds);
+
+            try
+            {
+                await UpdateMobileReceiptOcrAsync(
+                    connectionString,
+                    documentId,
+                    "error",
+                    "failed",
+                    null,
+                    new FuelReceiptExtraction(null, null, null, null, null));
+            }
+            catch (Exception stateException)
+            {
+                app.Logger.LogWarning(
+                    stateException,
+                    "Receipt {DocumentId} OCR failure status could not be persisted. The uploaded document was not removed.",
+                    documentId);
+            }
+        }
+        finally
+        {
+            // The OCR helpers perform their own per-run cleanup. This final sweep
+            // is deliberately best-effort so analysis artifacts never accumulate
+            // even when a decoder or external OCR process exits abnormally.
+            CleanupStalePumpAnalysisArtifacts();
+            MobileReceiptOcrGate.Release();
+        }
     }
 
     private static async Task UpdateMobileReceiptOcrAsync(

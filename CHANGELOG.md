@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.13 - Mobile receipt upload/OCR separation
+
+- A successfully stored mobile fuel photo now returns success immediately instead of waiting for OCR to finish.
+- Receipt/pump OCR runs in a serialized background task against the server-side copy, preventing unreadable or slow images from surfacing as mobile socket/network failures.
+- OCR misses and OCR exceptions leave the uploaded document in Pending review with blank fuel values instead of failing or deleting the upload.
+- Added explicit server logging for receipt storage, OCR start, OCR completion, elapsed time, and OCR failures.
+- Preserves the 0.8.12 pump-analysis cleanup behavior: generated analysis/preprocessing artifacts are removed after processing and stale leftovers are swept automatically.
+
 ## 0.8.12 - Pump OCR lab reader integration and temp cleanup
 
 - Replaced the earlier pump seven-segment reader with the standalone lab-tuned transaction reader used during field-image testing.
