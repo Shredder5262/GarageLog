@@ -3220,6 +3220,7 @@
 .vehicle-timeline-event.tone-indigo .vehicle-timeline-event-icon{background:#eef2ff;color:#4f46e5}.vehicle-timeline-event.tone-indigo .vehicle-timeline-dot{background:#4f46e5;box-shadow:0 0 0 1px #a5b4fc}
 .vehicle-timeline-runner{--timeline-runner-width:110px;position:absolute;left:calc(100% - 38px - var(--timeline-runner-width));bottom:56px;width:var(--timeline-runner-width);height:68px;z-index:8;pointer-events:none;filter:drop-shadow(0 4px 4px rgba(15,23,42,.2));opacity:1;display:flex;align-items:flex-end;justify-content:flex-end}
 .vehicle-timeline-runner img{display:block;width:100%;height:auto;max-height:64px;object-fit:contain;object-position:right bottom;user-select:none;-webkit-user-drag:none}
+.vehicle-timeline-runner img.timeline-vehicle-truck{transform:translateY(-4px)}
 .vehicle-timeline-hint{min-height:33px;display:flex;align-items:center;justify-content:center;gap:5px;padding:8px 14px;border-top:1px solid var(--border);color:#94a3b8;font-size:9px;background:#fff}
 .vehicle-timeline-hint svg{width:12px;height:12px}
 .vehicle-timeline-empty{height:340px;display:grid;place-items:center;align-content:center;text-align:center;gap:8px;color:var(--muted);padding:30px}
