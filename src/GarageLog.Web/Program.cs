@@ -91,6 +91,13 @@ builder.Services.AddHttpClient("GarageLogUpdates", client =>
     client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
     client.DefaultRequestHeaders.TryAddWithoutValidation("X-GitHub-Api-Version", "2022-11-28");
 });
+builder.Services.AddHttpClient("NhtsaRecalls", client =>
+{
+    client.BaseAddress = new Uri("https://api.nhtsa.gov/");
+    client.Timeout = TimeSpan.FromSeconds(20);
+    client.DefaultRequestHeaders.UserAgent.ParseAdd($"GarageLog/{GarageLogVersion}");
+    client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+});
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
@@ -179,6 +186,8 @@ await DatabaseMaintenance.BackupBeforeMigrationAsync(connectionString, databaseP
 await InitializeDatabaseAsync(connectionString);
 await DatabaseMaintenance.ConfigureDatabaseAsync(connectionString, app.Logger);
 await ApiTokenFeature.InitializeAsync(connectionString);
+await NotificationFeature.InitializeAsync(connectionString);
+await RecallFeature.InitializeAsync(connectionString);
 await LegacyDocumentShareMigration.ApplyAsync(connectionString, importLegacyRows: !documentShareTablePredatedThisStartup);
 var passwordHasher = app.Services.GetRequiredService<IPasswordHasher<GarageLogUser>>();
 var updateCacheGate = new SemaphoreSlim(1, 1);
@@ -296,6 +305,159 @@ app.Use(async (context, next) =>
 });
 app.UseAuthorization();
 ApiTokenFeature.MapEndpoints(app, connectionString, GarageLogVersion, vehiclesDirectory);
+
+app.MapGet("/api/notifications", async (HttpContext context, int? limit) =>
+{
+    var user = CurrentUser(context);
+    if (user is null) return Results.Unauthorized();
+    HashSet<string>? visibleVehicleIds = IsAdministrator(user) || CanViewAllVehicles(user) ? null : AssignedVehicleIds(user);
+    var settings = await NotificationFeature.ReadSettingsAsync(connectionString);
+    var notifications = await NotificationFeature.ReadActiveNotificationsAsync(connectionString, visibleVehicleIds, limit ?? 80);
+    return Results.Ok(new { enabled = settings.Enabled, notifications });
+});
+
+app.MapGet("/api/settings/notifications", async (HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    if (user is null) return Results.Unauthorized();
+    var settings = await NotificationFeature.ReadSettingsAsync(connectionString);
+    HashSet<string>? visibleVehicleIds = IsAdministrator(user) || CanViewAllVehicles(user) ? null : AssignedVehicleIds(user);
+    var recall = await RecallFeature.ReadSummaryAsync(connectionString, GarageLogSeed.Json, visibleVehicleIds);
+    return Results.Ok(new { settings, recall });
+});
+
+app.MapPut("/api/settings/notifications", async (NotificationSettingsUpdateRequest request, HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    if (user is null) return Results.Unauthorized();
+    if (!IsAdministrator(user))
+        return Results.Json(new { error = "Administrator access is required to change server notification settings." }, statusCode: StatusCodes.Status403Forbidden);
+
+    var settings = await NotificationFeature.SaveSettingsAsync(
+        connectionString,
+        request.Enabled,
+        request.ReminderNotificationsEnabled,
+        request.RecallNotificationsEnabled,
+        request.ReminderLeadDays,
+        request.MileageLeadMiles,
+        request.RecallCheckSchedule);
+    await NotificationFeature.EvaluateReminderNotificationsAsync(connectionString, GarageLogSeed.Json, app.Logger);
+    var recall = await RecallFeature.ReadSummaryAsync(connectionString, GarageLogSeed.Json);
+    return Results.Ok(new { settings, recall });
+}).RequireAuthorization("Administrator");
+
+app.MapPost("/api/notifications/evaluate", async (HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    if (user is null) return Results.Unauthorized();
+    if (!IsAdministrator(user))
+        return Results.Json(new { error = "Administrator access is required to evaluate server notifications." }, statusCode: StatusCodes.Status403Forbidden);
+    await NotificationFeature.EvaluateReminderNotificationsAsync(connectionString, GarageLogSeed.Json, app.Logger);
+    var notifications = await NotificationFeature.ReadActiveNotificationsAsync(connectionString, null, 100);
+    return Results.Ok(new { evaluated = true, notifications });
+}).RequireAuthorization("Administrator");
+
+app.MapGet("/api/recalls", async (HttpContext context, int? limit) =>
+{
+    var user = CurrentUser(context);
+    if (user is null) return Results.Unauthorized();
+    HashSet<string>? visibleVehicleIds = IsAdministrator(user) || CanViewAllVehicles(user) ? null : AssignedVehicleIds(user);
+    var recalls = await RecallFeature.ReadRecallsAsync(connectionString, GarageLogSeed.Json, visibleVehicleIds, limit ?? 250);
+    var summary = await RecallFeature.ReadSummaryAsync(connectionString, GarageLogSeed.Json, visibleVehicleIds);
+    return Results.Ok(new { recalls, summary });
+});
+
+app.MapGet("/api/recalls/match/{vehicleId}", async (string vehicleId, HttpContext context, IHttpClientFactory httpClientFactory) =>
+{
+    var user = CurrentUser(context);
+    if (user is null) return Results.Unauthorized();
+    if (!IsAdministrator(user))
+        return Results.Json(new { error = "Administrator access is required to configure recall vehicle matches." }, statusCode: StatusCodes.Status403Forbidden);
+    try
+    {
+        var client = httpClientFactory.CreateClient("NhtsaRecalls");
+        var match = await RecallFeature.BuildVehicleMatchAsync(connectionString, GarageLogSeed.Json, vehicleId, client);
+        if (match is null) return Results.NotFound(new { error = "Vehicle not found." });
+        return Results.Ok(match);
+    }
+    catch (Exception ex)
+    {
+        app.Logger.LogWarning(ex, "Unable to build NHTSA recall match for vehicle {VehicleId}.", vehicleId);
+        return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status502BadGateway);
+    }
+}).RequireAuthorization("Administrator");
+
+app.MapGet("/api/recalls/catalog/makes", async (string year, HttpContext context, IHttpClientFactory httpClientFactory) =>
+{
+    var user = CurrentUser(context);
+    if (user is null) return Results.Unauthorized();
+    if (!IsAdministrator(user))
+        return Results.Json(new { error = "Administrator access is required to configure recall vehicle matches." }, statusCode: StatusCodes.Status403Forbidden);
+    try
+    {
+        var client = httpClientFactory.CreateClient("NhtsaRecalls");
+        var makes = await RecallFeature.ReadCatalogMakesAsync(client, year);
+        return Results.Ok(new { year, makes });
+    }
+    catch (Exception ex)
+    {
+        return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status502BadGateway);
+    }
+}).RequireAuthorization("Administrator");
+
+app.MapGet("/api/recalls/catalog/models", async (string year, string make, HttpContext context, IHttpClientFactory httpClientFactory) =>
+{
+    var user = CurrentUser(context);
+    if (user is null) return Results.Unauthorized();
+    if (!IsAdministrator(user))
+        return Results.Json(new { error = "Administrator access is required to configure recall vehicle matches." }, statusCode: StatusCodes.Status403Forbidden);
+    try
+    {
+        var client = httpClientFactory.CreateClient("NhtsaRecalls");
+        var models = await RecallFeature.ReadCatalogModelsAsync(client, year, make);
+        return Results.Ok(new { year, make, models });
+    }
+    catch (Exception ex)
+    {
+        return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status502BadGateway);
+    }
+}).RequireAuthorization("Administrator");
+
+app.MapPost("/api/recalls/match", async (RecallVehicleMatchSaveRequest request, HttpContext context, IHttpClientFactory httpClientFactory) =>
+{
+    var user = CurrentUser(context);
+    if (user is null) return Results.Unauthorized();
+    if (!IsAdministrator(user))
+        return Results.Json(new { error = "Administrator access is required to configure recall vehicle matches." }, statusCode: StatusCodes.Status403Forbidden);
+    try
+    {
+        var client = httpClientFactory.CreateClient("NhtsaRecalls");
+        var profile = await RecallFeature.SaveVehicleMatchAsync(connectionString, GarageLogSeed.Json, request.VehicleId, request.Year, request.Make, request.Model, client);
+        var summary = await RecallFeature.ReadSummaryAsync(connectionString, GarageLogSeed.Json);
+        return Results.Ok(new { profile, summary });
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+    catch (Exception ex)
+    {
+        app.Logger.LogWarning(ex, "Unable to save NHTSA recall match for vehicle {VehicleId}.", request.VehicleId);
+        return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status502BadGateway);
+    }
+}).RequireAuthorization("Administrator");
+
+app.MapPost("/api/recalls/check", async (HttpContext context, IHttpClientFactory httpClientFactory) =>
+{
+    var user = CurrentUser(context);
+    if (user is null) return Results.Unauthorized();
+    if (!IsAdministrator(user))
+        return Results.Json(new { error = "Administrator access is required to run recall checks." }, statusCode: StatusCodes.Status403Forbidden);
+    var client = httpClientFactory.CreateClient("NhtsaRecalls");
+    var result = await RecallFeature.RefreshDueAsync(connectionString, GarageLogSeed.Json, client, app.Logger, force: true);
+    var summary = await RecallFeature.ReadSummaryAsync(connectionString, GarageLogSeed.Json);
+    return Results.Ok(new { checkedNow = true, result, summary });
+}).RequireAuthorization("Administrator");
 
 app.MapGet("/api/auth/session", async (HttpContext context) =>
 {
@@ -726,6 +888,14 @@ app.MapPut("/api/state", async (JsonElement state, HttpContext context) =>
     }
 
     context.Response.Headers["X-GarageLog-State-Revision"] = write.Revision.ToString(System.Globalization.CultureInfo.InvariantCulture);
+    try
+    {
+        await NotificationFeature.EvaluateReminderNotificationsAsync(connectionString, GarageLogSeed.Json, app.Logger);
+    }
+    catch (Exception ex)
+    {
+        app.Logger.LogWarning(ex, "GarageLog state was saved, but server notification evaluation failed.");
+    }
     return Results.Ok(new { saved = true, mileage = mileageValue.Value, revision = write.Revision, savedAtUtc = DateTimeOffset.UtcNow });
 });
 
@@ -1179,6 +1349,14 @@ app.MapFallbackToFile("index.html").AllowAnonymous();
 
 app.Logger.LogInformation("GarageLog {Version} is running.", GarageLogVersion);
 app.Logger.LogInformation("GarageLog local data storage is configured.");
+app.Logger.LogInformation("GarageLog server notifications are initialized; recall source is NHTSA.");
+
+NotificationFeature.StartBackgroundProcessing(
+    app.Lifetime,
+    connectionString,
+    GarageLogSeed.Json,
+    app.Services.GetRequiredService<IHttpClientFactory>(),
+    app.Logger);
 
 app.Run();
 
@@ -2080,6 +2258,14 @@ sealed record AuthSetupRequest(string Username, string DisplayName, string Passw
 sealed record AuthLoginRequest(string Username, string Password, bool RememberMe);
 sealed record ProfileUpdateRequest(string Username, string DisplayName);
 sealed record PasswordChangeRequest(string CurrentPassword, string NewPassword);
+sealed record NotificationSettingsUpdateRequest(
+    bool Enabled,
+    bool ReminderNotificationsEnabled,
+    bool RecallNotificationsEnabled,
+    int ReminderLeadDays,
+    int MileageLeadMiles,
+    string? RecallCheckSchedule);
+sealed record RecallVehicleMatchSaveRequest(string VehicleId, string Year, string Make, string Model);
 sealed record AdminCreateUserRequest(string Username, string DisplayName, string Password, string? Role, string? AccessLevel, string? VisibilityScope, string[]? AssignedVehicleIds);
 sealed record AdminUpdateUserRequest(string Username, string DisplayName, string? Role, string? AccessLevel, string? VisibilityScope, string[]? AssignedVehicleIds, bool IsActive);
 sealed record AdminResetPasswordRequest(string NewPassword);

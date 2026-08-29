@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging.Abstractions;
 
 var failures = new List<string>();
 
@@ -7,6 +8,11 @@ await RunAsync("state revision rejects stale writes", TestStateRevisionAsync);
 await RunAsync("legacy share cleanup does not resurrect deleted links", TestLegacyShareCleanupAsync);
 Run("telemetry fingerprint is deterministic", TestTelemetryFingerprint);
 await RunAsync("historical duplicate telemetry is superseded", TestTelemetryBackfillAsync);
+await RunAsync("server notifications persist and dedupe", TestServerNotificationPersistenceAsync);
+await RunAsync("server notification settings persist", TestServerNotificationSettingsAsync);
+await RunAsync("recall schedule migrates existing settings", TestRecallScheduleMigrationAsync);
+await RunAsync("NHTSA vehicle match validates alternate make/model", TestRecallVehicleMatchAsync);
+await RunAsync("linked maintenance reminder produces one server alert", TestLinkedReminderDedupeAsync);
 
 if (failures.Count > 0)
 {
@@ -240,6 +246,204 @@ static async Task TestTelemetryBackfillAsync()
     }
 }
 
+static async Task TestServerNotificationPersistenceAsync()
+{
+    var path = TempDatabasePath();
+    try
+    {
+        var cs = ConnectionString(path);
+        await NotificationFeature.InitializeAsync(cs);
+        var created = new DateTimeOffset(2026, 8, 29, 12, 0, 0, TimeSpan.Zero);
+        await NotificationFeature.UpsertAsync(cs, new ServerNotificationDto(
+            "reminder:test:Due Soon", "reminder", "Oil change — Due Soon", "Test Vehicle · Due in 7 days",
+            "orange", "bell", "Reminders", "vehicle-1", "reminder-1", null, created, created.AddDays(7)));
+        await NotificationFeature.UpsertAsync(cs, new ServerNotificationDto(
+            "reminder:test:Due Soon", "reminder", "Oil change — Due Soon", "Test Vehicle · Due in 5 days",
+            "orange", "bell", "Reminders", "vehicle-1", "reminder-1", null, created, created.AddDays(5)));
+
+        var items = await NotificationFeature.ReadActiveNotificationsAsync(cs, null, 20);
+        Assert(items.Count == 1, "repeated evaluation created duplicate server notification rows");
+        Assert(items[0].Detail.Contains("5 days", StringComparison.Ordinal), "existing server notification was not refreshed in place");
+    }
+    finally
+    {
+        TryDelete(path);
+    }
+}
+
+static async Task TestServerNotificationSettingsAsync()
+{
+    var path = TempDatabasePath();
+    try
+    {
+        var cs = ConnectionString(path);
+        await NotificationFeature.InitializeAsync(cs);
+        var defaults = await NotificationFeature.ReadSettingsAsync(cs);
+        Assert(!defaults.Enabled && !defaults.ReminderNotificationsEnabled && !defaults.RecallNotificationsEnabled, "notification and recall services should default to disabled");
+        var saved = await NotificationFeature.SaveSettingsAsync(cs, false, true, false, 14, 750, "quarterly");
+        Assert(!saved.Enabled, "server notification master switch did not persist");
+        Assert(saved.ReminderLeadDays == 14 && saved.MileageLeadMiles == 750 && saved.RecallCheckSchedule == "quarterly",
+            "server notification thresholds or recall schedule were not saved");
+        var read = await NotificationFeature.ReadSettingsAsync(cs);
+        Assert(!read.Enabled && !read.RecallNotificationsEnabled && read.RecallCheckSchedule == "quarterly", "server notification settings did not round-trip");
+    }
+    finally
+    {
+        TryDelete(path);
+    }
+}
+
+static async Task TestRecallScheduleMigrationAsync()
+{
+    var path = TempDatabasePath();
+    try
+    {
+        var cs = ConnectionString(path);
+        await using (var connection = new SqliteConnection(cs))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                CREATE TABLE NotificationServerSettings (
+                    Id INTEGER PRIMARY KEY CHECK (Id = 1),
+                    Enabled INTEGER NOT NULL DEFAULT 1,
+                    ReminderNotificationsEnabled INTEGER NOT NULL DEFAULT 1,
+                    RecallNotificationsEnabled INTEGER NOT NULL DEFAULT 0,
+                    ReminderLeadDays INTEGER NOT NULL DEFAULT 7,
+                    MileageLeadMiles INTEGER NOT NULL DEFAULT 500,
+                    RecallCheckIntervalHours INTEGER NOT NULL DEFAULT 24,
+                    UpdatedUtc TEXT NOT NULL
+                );
+                INSERT INTO NotificationServerSettings
+                    (Id, Enabled, ReminderNotificationsEnabled, RecallNotificationsEnabled, ReminderLeadDays, MileageLeadMiles, RecallCheckIntervalHours, UpdatedUtc)
+                VALUES (1, 1, 1, 1, 7, 500, 24, '2026-08-29T00:00:00.0000000+00:00');
+                """;
+            await command.ExecuteNonQueryAsync();
+        }
+
+        await NotificationFeature.InitializeAsync(cs);
+        var settings = await NotificationFeature.ReadSettingsAsync(cs);
+        Assert(settings.RecallCheckSchedule == "monthly", "existing notification settings did not receive the default monthly recall schedule");
+        Assert(!settings.Enabled && !settings.ReminderNotificationsEnabled && !settings.RecallNotificationsEnabled, "existing pre-release notification settings were not reset to opt-in defaults");
+        var sample = new DateTimeOffset(2026, 1, 31, 12, 0, 0, TimeSpan.Zero);
+        Assert(NotificationFeature.NextRecallCheckUtc(sample, "quarterly") == sample.AddMonths(3), "quarterly recall schedule interval is incorrect");
+    }
+    finally
+    {
+        TryDelete(path);
+    }
+}
+
+static async Task TestRecallVehicleMatchAsync()
+{
+    var path = TempDatabasePath();
+    try
+    {
+        var cs = ConnectionString(path);
+        await using (var connection = new SqliteConnection(cs))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                CREATE TABLE AppState (
+                    Id INTEGER PRIMARY KEY CHECK (Id = 1),
+                    Json TEXT NOT NULL,
+                    UpdatedUtc TEXT NOT NULL,
+                    Revision INTEGER NOT NULL DEFAULT 1
+                );
+                INSERT INTO AppState (Id, Json, UpdatedUtc, Revision)
+                VALUES (1, $json, $now, 1);
+                """;
+            command.Parameters.AddWithValue("$json", "{\"vehicles\":[{\"id\":\"truck-1\",\"year\":\"2015\",\"make\":\"Dodge\",\"model\":\"RAM 1500\",\"name\":\"2015 Dodge RAM 1500\"}]}");
+            command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+            await command.ExecuteNonQueryAsync();
+        }
+        await RecallFeature.InitializeAsync(cs);
+        using var client = new HttpClient(new FakeNhtsaCatalogHandler()) { BaseAddress = new Uri("https://api.nhtsa.gov/") };
+        var match = await RecallFeature.BuildVehicleMatchAsync(cs, "{}", "truck-1", client);
+        Assert(match is not null, "vehicle match response was null");
+        Assert(match!.Suggestions.Any(item => item.Make == "RAM" && item.Model == "1500"), "GarageLog did not suggest NHTSA RAM 1500 for Dodge RAM 1500");
+        var profile = await RecallFeature.SaveVehicleMatchAsync(cs, "{}", "truck-1", "2015", "RAM", "1500", client);
+        Assert(profile.IsValidated && profile.NhtsaMake == "RAM" && profile.NhtsaModel == "1500", "validated NHTSA profile did not persist canonical make/model");
+        var summary = await RecallFeature.ReadSummaryAsync(cs, "{}");
+        var vehicle = summary.Vehicles.Single(item => item.VehicleId == "truck-1");
+        Assert(vehicle.IsValidated && vehicle.Query == "2015 RAM 1500", "recall summary did not expose the saved NHTSA match");
+    }
+    finally
+    {
+        TryDelete(path);
+    }
+}
+
+static async Task TestLinkedReminderDedupeAsync()
+{
+    var path = TempDatabasePath();
+    try
+    {
+        var cs = ConnectionString(path);
+        await using (var connection = new SqliteConnection(cs))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                CREATE TABLE AppState (
+                    Id INTEGER PRIMARY KEY CHECK (Id = 1),
+                    Json TEXT NOT NULL,
+                    UpdatedUtc TEXT NOT NULL,
+                    Revision INTEGER NOT NULL DEFAULT 1
+                );
+                INSERT INTO AppState (Id, Json, UpdatedUtc, Revision)
+                VALUES (1, $json, $now, 1);
+                """;
+            var due = DateTime.Now.Date.AddDays(1).ToString("yyyy-MM-dd");
+            var state = new JsonObject
+            {
+                ["vehicles"] = new JsonArray
+                {
+                    new JsonObject { ["id"] = "vehicle-1", ["name"] = "Test Vehicle", ["mileage"] = 10000 }
+                },
+                ["reminders"] = new JsonArray
+                {
+                    new JsonObject
+                    {
+                        ["id"] = "reminder-1", ["vehicleId"] = "vehicle-1", ["maintenanceId"] = "maintenance-1",
+                        ["name"] = "Oil Change", ["due"] = due, ["status"] = "Upcoming", ["leadTime"] = 7, ["leadUnit"] = "days"
+                    }
+                },
+                ["maintenance"] = new JsonArray
+                {
+                    new JsonObject
+                    {
+                        ["id"] = "maintenance-1", ["vehicleId"] = "vehicle-1", ["reminderId"] = "reminder-1",
+                        ["name"] = "Oil Change", ["due"] = due, ["status"] = "Upcoming", ["leadTime"] = 7
+                    }
+                }
+            };
+            command.Parameters.AddWithValue("$json", state.ToJsonString());
+            command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+            await command.ExecuteNonQueryAsync();
+        }
+
+        await NotificationFeature.InitializeAsync(cs);
+        await NotificationFeature.SaveSettingsAsync(
+            cs,
+            enabled: true,
+            reminderNotificationsEnabled: true,
+            recallNotificationsEnabled: false,
+            reminderLeadDays: 7,
+            mileageLeadMiles: 500,
+            recallCheckSchedule: "monthly");
+        await NotificationFeature.EvaluateReminderNotificationsAsync(cs, "{}", NullLogger.Instance);
+        var items = await NotificationFeature.ReadActiveNotificationsAsync(cs, null, 20);
+        Assert(items.Count == 1, $"linked reminder and maintenance item should create exactly one server alert, but created {items.Count}");
+        Assert(items[0].Category == "reminder", "linked maintenance should use the reminder as the canonical alert");
+    }
+    finally
+    {
+        TryDelete(path);
+    }
+}
+
 static string TempDatabasePath()
     => Path.Combine(Path.GetTempPath(), $"garagelog-regression-{Guid.NewGuid():N}.db");
 
@@ -265,3 +469,23 @@ static void Assert(bool condition, string message)
 {
     if (!condition) throw new InvalidOperationException(message);
 }
+
+sealed class FakeNhtsaCatalogHandler : HttpMessageHandler
+{
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        var uri = request.RequestUri?.ToString() ?? string.Empty;
+        string json;
+        if (uri.Contains("/products/vehicle/makes", StringComparison.OrdinalIgnoreCase))
+            json = "{\"results\":[{\"modelYear\":\"2015\",\"make\":\"DODGE\"},{\"modelYear\":\"2015\",\"make\":\"RAM\"}]}";
+        else if (uri.Contains("make=RAM", StringComparison.OrdinalIgnoreCase))
+            json = "{\"results\":[{\"modelYear\":\"2015\",\"make\":\"RAM\",\"model\":\"1500\"},{\"modelYear\":\"2015\",\"make\":\"RAM\",\"model\":\"2500\"}]}";
+        else
+            json = "{\"results\":[{\"modelYear\":\"2015\",\"make\":\"DODGE\",\"model\":\"DURANGO\"}]}";
+        return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+        {
+            Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json")
+        });
+    }
+}
+

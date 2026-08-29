@@ -24,6 +24,8 @@ let reportCustomRange={start:'',end:''};
 let reportViewMode='dashboard';
 let selectedReportTemplateId='ownership-cost';
 let notificationPanelOpen=false;
+let serverNotifications=[];
+let serverNotificationsEnabled=false;
 let expenseViewMode='expenses';
 let editingRecurringExpenseId=null;
 let dashboardExpenseRange='this-year';
@@ -39,6 +41,9 @@ let reminderTimelineOffset=0;
 let reminderViewMode='list';
 let reminderCalendarCursor=new Date(new Date().getFullYear(),new Date().getMonth(),1,12);
 let infoModalAction=null;
+let recallModalCampaigns=[];
+let recallModalSelectedCampaignNumbers=new Set();
+let recallModalVehicle=null;
 let authSession=null;
 let managedUsers=[];
 let managedUsersLoading=false;
@@ -113,6 +118,7 @@ const ICONS={
  receipt:'<path d="M6 3h12v18l-3-2-3 2-3-2-3 2z"/><path d="M9 8h6m-6 4h6m-6 4h3"/>',
  file:'<path d="M6 2h8l4 4v16H6z"/><path d="M14 2v5h5"/>',
  bell:'<path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/>',
+ refresh:'<path d="M20 6v5h-5"/><path d="M4 18v-5h5"/><path d="M18.5 9A7 7 0 0 0 6.2 6.2L4 8"/><path d="M5.5 15A7 7 0 0 0 17.8 17.8L20 16"/>',
  chart:'<path d="M4 19V9m6 10V5m6 14v-7m4 7H2"/>',
  search:'<circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/>',
  plus:'<path d="M12 5v14M5 12h14"/>',
@@ -181,6 +187,7 @@ function profileAvatarMarkup(user=sessionUser(),large=false){const cls=large?'ac
 function updateProfileChrome(){const user=sessionUser(),trigger=document.getElementById('profileTrigger');if(!user||!trigger)return;const avatar=trigger.querySelector('.avatar');if(avatar){avatar.className='avatar'+(user.profileImageUrl?' has-image':'');avatar.innerHTML=user.profileImageUrl?`<img src="${esc(user.profileImageUrl)}" alt="${esc(user.displayName||user.username)} profile picture">`:esc(profileInitials(user))}const label=trigger.querySelector('.profile-label');if(label)label.textContent=user.displayName||user.username;trigger.title=`${user.role} · ${user.accessLevel==='ReadOnly'?'Read only':'Read and write'}`;}
 function permissionNotice(){const user=sessionUser();if(!user||canWrite())return'';return `<div class="permission-notice">${svg('info')}<div><strong>Read-only access</strong><span>You can view the GarageLog records available to this account, but changes are disabled.</span></div></div>`}
 async function authRequest(url,options={}){const response=await fetch(url,{cache:'no-store',...options});const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(data.error||`Request failed (${response.status})`);return data}
+async function refreshServerNotifications(){try{const result=await authRequest('/api/notifications?limit=80');serverNotifications=Array.isArray(result?.notifications)?result.notifications:[];serverNotificationsEnabled=Boolean(result?.enabled);return serverNotifications}catch(error){console.warn('GarageLog server notifications unavailable',error);serverNotifications=[];serverNotificationsEnabled=false;return[]}}
 async function checkForGarageLogUpdates(){
  if(!isAdministrator())return;
  try{const result=await authRequest('/api/update/status');availableUpdate=result?.updateAvailable?result:null;if(state)render()}catch(error){console.warn('GarageLog update check unavailable',error)}
@@ -237,6 +244,7 @@ async function loadState({persistNormalization=true}={}){
  // revision. This prevents a background/mobile update from being overwritten by
  // an older browser snapshot.
  if(migrated&&canWrite()&&persistNormalization){try{await saveNow()}catch(error){console.warn('GarageLog startup normalization could not be persisted.',error)}}
+ await refreshServerNotifications();
 }
 function makeVehicleId(){return globalThis.crypto?.randomUUID?.()||`vehicle-${Date.now()}-${Math.random().toString(16).slice(2)}`}
 function makeRecordId(prefix='record'){return globalThis.crypto?.randomUUID?.()||`${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`}
@@ -1478,6 +1486,50 @@ function dashboardReminderMeta(reminder){
   return{status,rank,due}
 }
 function compareDashboardReminders(a,b){const left=dashboardReminderMeta(a),right=dashboardReminderMeta(b);return left.rank-right.rank||left.due-right.due||String(a?.name||'').localeCompare(String(b?.name||''))}
+function activeRecallNotifications(vehicleId=state?.activeVehicleId){
+ const id=String(vehicleId||'');if(!id)return[];const dismissed=new Set(notificationSettings().dismissedIds||[]);
+ return (serverNotifications||[]).filter(item=>String(item.category||'').toLowerCase()==='recall'&&String(item.vehicleId||'')===id&&!dismissed.has(String(item.id)));
+}
+function dashboardRecallBadge(){
+ const items=activeRecallNotifications();if(!items.length)return'';const urgent=items.some(item=>String(item.tone||'').toLowerCase()==='red');
+ return `<button type="button" class="dashboard-recall-badge ${urgent?'urgent':''}" onclick="openDashboardRecallDetails()">${svg('warning')}<span>Recall</span>${items.length>1?`<b>${items.length}</b>`:''}</button>`
+}
+function recallCampaignPrintMarkup(item){
+ return `<section class="print-recall-item"><div class="print-recall-heading"><span>${esc(item.campaignNumber||'Recall')}</span>${item.parkIt?'<b>PARK IT</b>':''}</div><h2>${esc(item.component||'Safety recall')}</h2><div class="print-recall-block"><h3>Summary</h3><p>${esc(item.summary||'No summary provided.')}</p></div>${item.consequence?`<div class="print-recall-block"><h3>Risk</h3><p>${esc(item.consequence)}</p></div>`:''}${item.remedy?`<div class="print-recall-block"><h3>Remedy</h3><p>${esc(item.remedy)}</p></div>`:''}</section>`
+}
+function printRecallCampaigns(items,label){
+ const campaigns=Array.isArray(items)?items.filter(Boolean):[];if(!campaigns.length){toast('Select a recall campaign to print');return}
+ const vehicle=recallModalVehicle||activeVehicle(),popup=window.open('','_blank','noopener,noreferrer');if(!popup){toast('Allow pop-ups to print recall information');return}
+ const vehicleName=vehicleFullName(vehicle),generated=new Date().toLocaleString();
+ popup.document.open();popup.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${esc(vehicleName)} - ${esc(label)}</title><style>@page{margin:.55in}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#172033;margin:0;font-size:11pt;line-height:1.45}.print-header{border-bottom:2px solid #1d4ed8;padding-bottom:12px;margin-bottom:20px}.print-header h1{font-size:20pt;margin:0 0 4px}.print-header p{margin:2px 0;color:#526173}.print-note{padding:9px 11px;background:#fff7ed;border:1px solid #fed7aa;border-radius:6px;margin:0 0 18px}.print-recall-item{break-inside:avoid;border:1px solid #cbd5e1;border-radius:7px;padding:14px;margin:0 0 14px}.print-recall-heading{display:flex;justify-content:space-between;gap:12px;color:#c2410c;font-weight:700;font-size:9.5pt}.print-recall-heading b{background:#dc2626;color:#fff;border-radius:999px;padding:2px 7px;font-size:8pt}.print-recall-item h2{font-size:13pt;margin:5px 0 10px}.print-recall-block{display:grid;grid-template-columns:72px 1fr;gap:8px;margin-top:7px}.print-recall-block h3{font-size:9pt;color:#64748b;margin:0}.print-recall-block p{margin:0}.print-footer{margin-top:18px;color:#64748b;font-size:8.5pt}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}</style></head><body><header class="print-header"><h1>Vehicle Recall Notice</h1><p><strong>${esc(vehicleName)}</strong></p><p>${esc(label)} · Printed ${esc(generated)}</p></header><div class="print-note">These are NHTSA model-level campaign matches. Confirm VIN-specific open-recall status with NHTSA or an authorized dealer.</div>${campaigns.map(recallCampaignPrintMarkup).join('')}<div class="print-footer">Generated by GarageLog from cached NHTSA recall information.</div><script>window.addEventListener('load',()=>{window.focus();window.print()});<\/script></body></html>`);popup.document.close()
+}
+function syncRecallCampaignSelection(){
+ document.querySelectorAll('.recall-modal-list article[data-campaign]').forEach(card=>{const selected=recallModalSelectedCampaignNumbers.has(String(card.dataset.campaign||''));card.classList.toggle('selected',selected);card.setAttribute('aria-checked',selected?'true':'false');const box=card.querySelector('.recall-selection-box');if(box)box.textContent=selected?'✓':''});
+ const button=document.querySelector('.recall-print-selected'),count=document.querySelector('.recall-print-selected-count'),selectedCount=recallModalSelectedCampaignNumbers.size;if(button)button.disabled=selectedCount===0;if(count)count.textContent=selectedCount?`(${selectedCount})`:''
+}
+window.toggleRecallCampaign=function(campaignNumber){
+ const key=String(campaignNumber||'');if(!key)return;if(recallModalSelectedCampaignNumbers.has(key))recallModalSelectedCampaignNumbers.delete(key);else recallModalSelectedCampaignNumbers.add(key);syncRecallCampaignSelection()
+}
+window.printSelectedRecall=function(){const items=recallModalCampaigns.filter(entry=>recallModalSelectedCampaignNumbers.has(String(entry.campaignNumber||''))),count=items.length;printRecallCampaigns(items,count===1?'Selected recall campaign':`${count} selected recall campaigns`)}
+window.printAllRecalls=function(){printRecallCampaigns(recallModalCampaigns,'All recall campaigns')}
+window.openDashboardRecallDetails=async function(){
+ const vehicle=activeVehicle(),vehicleId=String(vehicle?.id||state?.activeVehicleId||''),notices=activeRecallNotifications(vehicleId);if(!vehicleId||!notices.length)return;
+ const modal=document.getElementById('infoModal'),title=document.getElementById('infoModalTitle'),subtitle=document.getElementById('infoModalSubtitle'),body=document.getElementById('infoModalBody'),primary=document.getElementById('infoModalPrimary'),secondary=document.getElementById('infoModalSecondary');
+ modal.classList.add('recall-detail-dialog');modal.addEventListener('close',()=>modal.classList.remove('recall-detail-dialog'),{once:true});
+ infoModalAction=null;recallModalCampaigns=[];recallModalSelectedCampaignNumbers=new Set();recallModalVehicle=vehicle;title.textContent='Vehicle Recall Notice';subtitle.textContent=vehicleFullName(vehicle);secondary.textContent='Close';primary.hidden=!canWrite();primary.textContent='Clear Recall Badge';
+ body.innerHTML=`<div class="recall-detail-loading">${svg('refresh')}<span>Loading recall details…</span></div>`;modal.showModal();
+ try{
+  const result=await authRequest('/api/recalls?limit=250'),recalls=(Array.isArray(result?.recalls)?result.recalls:[]).filter(item=>String(item.vehicleId||'')===vehicleId),verifyUrl=notices.find(item=>item.url)?.url||result?.summary?.providerUrl||'https://www.nhtsa.gov/recalls';
+  recallModalCampaigns=recalls;recallModalSelectedCampaignNumbers=new Set(recalls[0]?.campaignNumber?[String(recalls[0].campaignNumber)]:[]);
+  body.innerHTML=`<div class="recall-modal-summary"><span class="notification-item-icon ${notices.some(item=>item.tone==='red')?'red':'orange'}">${svg('warning')}</span><div><strong>${recalls.length} recall campaign${recalls.length===1?'':'s'} found</strong><p>Select one or more campaigns to print. A model-level match does not confirm whether this VIN still has an unrepaired recall.</p></div></div>${recalls.length?`<div class="recall-modal-list">${recalls.map((item,index)=>`<article class="${index===0?'selected':''}" data-campaign="${esc(String(item.campaignNumber||''))}" role="checkbox" aria-checked="${index===0?'true':'false'}" tabindex="0"><div class="recall-modal-item-head"><span>${esc(item.campaignNumber||'Recall')}</span><div class="recall-modal-item-badges"><span class="recall-selection-box" aria-hidden="true">${index===0?'✓':''}</span>${item.parkIt?'<b class="recall-park-badge">PARK IT</b>':''}</div></div><strong>${esc(item.component||'Safety recall')}</strong><p>${esc(item.summary||'No summary provided.')}</p>${item.consequence?`<dl><dt>Risk</dt><dd>${esc(item.consequence)}</dd></dl>`:''}${item.remedy?`<dl><dt>Remedy</dt><dd>${esc(item.remedy)}</dd></dl>`:''}</article>`).join('')}</div>`:'<div class="info-callout">GarageLog has an active recall alert, but no cached campaign details were returned. Run a recall check from Settings.</div>'}<div class="recall-modal-actions"><div class="recall-print-actions">${recalls.length?`<button type="button" class="secondary recall-print-selected">${svg('printer')} Print Selected <b class="recall-print-selected-count">${recalls.length?'(1)':''}</b></button><button type="button" class="secondary recall-print-all">${svg('printer')} Print All</button>`:''}</div><a class="secondary" href="${esc(verifyUrl)}" target="_blank" rel="noopener noreferrer">${svg('external')} Verify at NHTSA</a></div>`;
+  body.querySelectorAll('.recall-modal-list article[data-campaign]').forEach(card=>{card.addEventListener('click',()=>toggleRecallCampaign(card.dataset.campaign));card.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleRecallCampaign(card.dataset.campaign)}})});
+  body.querySelector('.recall-print-selected')?.addEventListener('click',printSelectedRecall);body.querySelector('.recall-print-all')?.addEventListener('click',printAllRecalls);
+  infoModalAction=window.clearDashboardRecallBadge;
+ }catch(error){body.innerHTML=`<div class="info-callout">${esc(error.message||'Unable to load recall details.')}</div>`;primary.hidden=true}
+}
+window.clearDashboardRecallBadge=async function(){
+ if(!canWrite())return;const ids=activeRecallNotifications().map(item=>String(item.id));if(!ids.length)return;const settings=notificationSettings();settings.dismissedIds=[...new Set([...(settings.dismissedIds||[]),...ids])].slice(-500);settings.readIds=(settings.readIds||[]).filter(id=>!ids.includes(id));try{await saveNow();document.getElementById('infoModal')?.close();render();toast('Recall badge cleared')}catch(error){toast(error.message||'Unable to clear recall badge')}
+}
 function dashboard(){
  const t=expenseTotals();
  const maintenance=activeMaintenance(),expenses=activeExpenses(),documents=activeDocuments(),allReminders=activeReminders();
@@ -1536,7 +1588,7 @@ function dashboard(){
  <section class="vehicle-context-banner card">
    <div class="vehicle-context-image"><img src="${vehicleImageUrl()}" alt="${esc(vehicleFullName())}" onerror="this.onerror=null;this.src='${vehicleDefaultImageUrl()}'"></div>
    <div class="vehicle-context-body">
-     <div class="vehicle-context-heading"><div><div class="eyebrow">ACTIVE VEHICLE</div><h1>${esc(vehicleFullName())}</h1></div><span class="health-pill health-${health.level}" title="${esc(health.reason)}">${health.label}</span></div>
+     <div class="vehicle-context-heading"><div><div class="eyebrow">ACTIVE VEHICLE</div><div class="vehicle-context-title-line"><h1>${esc(vehicleFullName())}</h1><span class="health-pill health-${health.level}" title="${esc(health.reason)}">${health.label}</span></div></div></div>
      <div class="vehicle-context-specs">
        <div><span>Mileage</span><strong>${number(state.mileage)} mi</strong></div>
        <div><span>VIN</span><strong>${esc(state.vehicle.vin||'Not entered')}</strong></div>
@@ -1545,7 +1597,7 @@ function dashboard(){
        <div><span>Color</span><strong>${esc(state.vehicle.color||'Not entered')}</strong></div>
      </div>
    </div>
-   <div class="vehicle-context-actions"><button class="secondary" onclick="goPage('Garage')">View Vehicle Details ${svg('external')}</button></div>
+   <div class="vehicle-context-actions">${dashboardRecallBadge()}<button class="secondary" onclick="goPage('Garage')">View Vehicle Details ${svg('external')}</button></div>
  </section>
  ${otherVehicleDataNotice()}
 
@@ -1704,6 +1756,7 @@ function timelineVehicleGraphic(vehicle){
 function timelineEventDate(value){const date=parseRecordDate(value);return date&&!Number.isNaN(date.getTime())?date:null}
 function timelineEventLabel(date){return date.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}
 function timelineEventKey(date){return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`}
+function timelineRelevantDate(record,...fallbacks){return String(record?.relevantDate||'').trim()||fallbacks.find(value=>String(value||'').trim())||null}
 function buildVehicleTimelineEvents(vehicle){
  const vehicleId=String(vehicle.id),events=[],push=(event)=>{const date=timelineEventDate(event.date);if(!date)return;events.push({...event,date,dateMs:date.getTime(),dateLabel:timelineEventLabel(date),filters:Array.isArray(event.filters)?event.filters:[event.kind]})};
  if(vehicle.acquiredDate)push({id:`vehicle-acquired-${vehicleId}`,date:vehicle.acquiredDate,kind:'vehicle',tone:'blue',icon:'car',eyebrow:'Vehicle',title:'Vehicle acquired',detail:vehicle.acquiredMileage===null||vehicle.acquiredMileage===undefined?'Added to GarageLog':`${number(vehicle.acquiredMileage)} mi at acquisition`,filters:['vehicle','mileage']});
@@ -1711,6 +1764,7 @@ function buildVehicleTimelineEvents(vehicle){
  const expenses=(state.expenses||[]).filter(item=>String(item.vehicleId)===vehicleId);
  const expenseIds=new Set(expenses.map(item=>String(item.id||'')));
  for(const item of expenses){
+   const linkedDocument=linkedDocumentForExpense(item),linkedDoc=linkedDocument?.doc,eventDate=timelineRelevantDate(linkedDoc,item.relevantDate,item.date,item.createdAt);
    const category=String(item.category||'Other'),fuel=category==='Fuel',service=['Maintenance','Repair','Parts'].includes(category),insurance=category==='Insurance',registration=category==='Registration',title=fuel?'Fuel fill-up':service?expenseServiceLabel(item):category,parts=[];
    if(item.vendor)parts.push(String(item.vendor));
    if(fuel&&Number(item.gallons)>0)parts.push(`${Number(item.gallons).toFixed(3).replace(/0+$/,'').replace(/\.$/,'')} gal`);
@@ -1718,28 +1772,31 @@ function buildVehicleTimelineEvents(vehicle){
    if(item.coverageType&&String(item.coverageType)!=='None')parts.push(`${item.coverageType} covered`);
    if(fuel&&Number(item.odometer)>0)parts.push(`${number(item.odometer)} mi`);
    const filters=['expenses'];
+   if(linkedDoc)filters.push('documents');
    if(fuel)filters.push('fuel');
    if(service)filters.push('service');
    if(insurance)filters.push('insurance');
    if(registration)filters.push('registration');
-   push({id:`expense-${item.id||Math.random()}`,date:item.date||item.createdAt,kind:fuel?'fuel':service?'maintenance':'expense',tone:fuel?'orange':service?'green':insurance?'purple':registration?'teal':'purple',icon:fuel?'fuel':service?'wrench':insurance?'shield':registration?'calendar':'receipt',eyebrow:fuel?'Fuel':service?'Service':insurance?'Insurance':registration?'Registration':'Expense',title:title||category,detail:parts.filter(Boolean).join(' · ')||String(item.notes||''),filters});
+   push({id:`expense-${item.id||Math.random()}`,date:eventDate,kind:fuel?'fuel':service?'maintenance':'expense',tone:fuel?'orange':service?'green':insurance?'purple':registration?'teal':'purple',icon:fuel?'fuel':service?'wrench':insurance?'shield':registration?'calendar':'receipt',eyebrow:fuel?'Fuel':service?'Service':insurance?'Insurance':registration?'Registration':'Expense',title:title||category,detail:parts.filter(Boolean).join(' · ')||String(item.notes||''),filters:[...new Set(filters)],documentIndex:linkedDocument?.index,documentName:linkedDoc?.name});
  }
  const appliedObd=(garageTimelineObdProposals||[]).filter(item=>String(item.vehicleId||'')===vehicleId&&String(item.effectiveStatus||item.storedStatus||'').toLowerCase()==='applied');
  const obdMileage=appliedObd.map(item=>Number(item.candidateOdometer)).filter(Number.isFinite);
- for(const item of appliedObd)push({id:`obd-${item.tripId}`,date:item.appliedUtc||item.endedAt,kind:'mileage',tone:'indigo',icon:'gauge',eyebrow:'Mileage',title:'Odometer updated',detail:Number(item.candidateOdometer)>0?`OBD · ${number(item.candidateOdometer)} mi${Number(item.distanceMiles)>0?` · ${Number(item.distanceMiles).toFixed(1)} mi trip`:''}`:'OBD telemetry trip applied',filters:['mileage']});
+ for(const item of appliedObd)push({id:`obd-${item.tripId}`,date:timelineRelevantDate(item,item.appliedUtc,item.endedAt),kind:'mileage',tone:'indigo',icon:'gauge',eyebrow:'Mileage',title:'Odometer updated',detail:Number(item.candidateOdometer)>0?`OBD · ${number(item.candidateOdometer)} mi${Number(item.distanceMiles)>0?` · ${Number(item.distanceMiles).toFixed(1)} mi trip`:''}`:'OBD telemetry trip applied',filters:['mileage']});
  for(const reading of vehicle.mileageHistory||[]){
    const source=String(reading?.source||'Mileage update'),mileage=Number(reading?.mileage);
    if(String(reading?.expenseId||'')&&expenseIds.has(String(reading.expenseId)))continue;
    if(vehicle.acquiredDate&&source.toLowerCase().includes('acquired')&&timelineEventKey(timelineEventDate(reading.date)||new Date(0))===timelineEventKey(timelineEventDate(vehicle.acquiredDate)||new Date(1)))continue;
    if(source.toLowerCase().includes('garagelog obd')&&obdMileage.some(value=>Math.abs(value-mileage)<.05))continue;
-   push({id:`mileage-${reading?.date||''}-${mileage}-${source}`,date:reading?.date,kind:'mileage',tone:source.toLowerCase().includes('obd')?'indigo':'blue',icon:'gauge',eyebrow:'Mileage',title:Number.isFinite(mileage)?`${number(mileage)} mi`:'Mileage updated',detail:source.toLowerCase().includes('obd')?`OBD · ${source}`:source,filters:['mileage']});
+   push({id:`mileage-${reading?.date||''}-${mileage}-${source}`,date:timelineRelevantDate(reading,reading?.date),kind:'mileage',tone:source.toLowerCase().includes('obd')?'indigo':'blue',icon:'gauge',eyebrow:'Mileage',title:Number.isFinite(mileage)?`${number(mileage)} mi`:'Mileage updated',detail:source.toLowerCase().includes('obd')?`OBD · ${source}`:source,filters:['mileage']});
  }
- for(const item of state.documents||[]){
-   if(String(item.vehicleId)!==vehicleId)continue;
-   const category=normalizeDocumentCategory(item.category),filters=['documents'];
+ for(let documentIndex=0;documentIndex<(state.documents||[]).length;documentIndex++){
+   const item=state.documents[documentIndex];if(String(item.vehicleId)!==vehicleId)continue;
+   const linkedExpense=linkedExpenseForDocument(item);
+   if(linkedExpense&&String(linkedExpense.vehicleId||'')===vehicleId)continue;
+   const category=normalizeDocumentCategory(item.category),filters=['documents'],eventDate=timelineRelevantDate(item,item.startsOn,item.date,item.addedAt);
    if(category==='Insurance')filters.push('insurance');
    if(category==='Registration')filters.push('registration');
-   push({id:`document-${item.id}`,date:item.relevantDate||(['Insurance','Registration'].includes(category)?(item.startsOn||item.date||item.addedAt):(item.addedAt||item.date||item.startsOn)),kind:'document',tone:category==='Insurance'?'purple':category==='Registration'?'teal':'slate',icon:category==='Insurance'?'shield':category==='Registration'?'calendar':'file',eyebrow:category==='Insurance'?'Insurance':category==='Registration'?'Registration':'Document',title:item.name||'Document added',detail:[category,item.shop].filter(Boolean).join(' · ')||'Added to vehicle records',filters})
+   push({id:`document-${item.id}`,date:eventDate,kind:'document',tone:category==='Insurance'?'purple':category==='Registration'?'teal':'slate',icon:category==='Insurance'?'shield':category==='Registration'?'calendar':'file',eyebrow:category==='Insurance'?'Insurance':category==='Registration'?'Registration':'Document',title:item.name||'Document added',detail:[category,item.shop].filter(Boolean).join(' · ')||'Added to vehicle records',filters,documentIndex,documentName:item.name})
  }
  const reminders=(state.reminders||[]).filter(item=>String(item.vehicleId)===vehicleId);
  for(const item of reminders){
@@ -1748,12 +1805,12 @@ function buildVehicleTimelineEvents(vehicle){
    if(maintenanceReminder)filters.push('service');
    if(lowerName.includes('insurance'))filters.push('insurance');
    if(lowerName.includes('registration')||lowerName.includes('license')||lowerName.includes('title'))filters.push('registration');
-   push({id:`reminder-${item.id}`,date:item.completedAt||item.updatedAt||item.due,kind:'reminder',tone:filters.includes('insurance')?'purple':filters.includes('registration')?'teal':'teal',icon:filters.includes('insurance')?'shield':filters.includes('registration')?'calendar':'check',eyebrow:filters.includes('insurance')?'Insurance':filters.includes('registration')?'Registration':'Reminder',title:item.name||'Reminder completed',detail:item.rule||item.due||'Completed',filters})
+   push({id:`reminder-${item.id}`,date:timelineRelevantDate(item,item.completedAt,item.updatedAt,item.due),kind:'reminder',tone:filters.includes('insurance')?'purple':filters.includes('registration')?'teal':'teal',icon:filters.includes('insurance')?'shield':filters.includes('registration')?'calendar':'check',eyebrow:filters.includes('insurance')?'Insurance':filters.includes('registration')?'Registration':'Reminder',title:item.name||'Reminder completed',detail:item.rule||item.due||'Completed',filters})
  }
  const remindersById=new Map(reminders.map(item=>[String(item.id||''),item]));
  for(const item of state.maintenance||[]){
    if(String(item.vehicleId)!==vehicleId||String(item.status||'').toLowerCase()!=='completed')continue;
-   const linked=remindersById.get(String(item.reminderId||'')),eventDate=item.completedAt||linked?.completedAt||item.updatedAt;
+   const linked=remindersById.get(String(item.reminderId||'')),eventDate=timelineRelevantDate(item,linked?.relevantDate,item.completedAt,linked?.completedAt,item.updatedAt);
    if(!eventDate||(linked&&String(linked.status||'').toLowerCase()==='completed'))continue;
    push({id:`maintenance-${item.id}`,date:eventDate,kind:'maintenance',tone:'green',icon:'wrench',eyebrow:'Maintenance',title:item.name||'Maintenance completed',detail:item.interval||item.due||'Completed service',filters:['service']});
  }
@@ -1777,7 +1834,7 @@ function garageVehicleTimeline(vehicle){
  const allEvents=buildVehicleTimelineEvents(vehicle),events=garageTimelineFilter==='all'?allEvents:allEvents.filter(event=>event.filters.includes(garageTimelineFilter)),animate=garageTimelineAnimate;garageTimelineAnimate=false;
  const timelineAnimationMs=1500,spacing=172,trackWidth=Math.max(1040,events.length*spacing+120),laneLifts=[72,164,256,348],countText=`${events.length} event${events.length===1?'':'s'}${garageTimelineFilter==='all'?'':` · filtered from ${allEvents.length}`}`;
  const axisStart=38,axisEnd=Math.max(axisStart+1,trackWidth-38),travelDistance=Math.max(1,axisEnd-axisStart),revealLeadMs=90;
- const markers=events.map((event,index)=>{const x=94+index*spacing,lift=laneLifts[index%laneLifts.length],progress=Math.max(0,Math.min(1,(x-axisStart)/travelDistance)),delay=Math.max(0,Math.min(timelineAnimationMs-180,Math.round(progress*timelineAnimationMs)-revealLeadMs));return `<article class="vehicle-timeline-event tone-${event.tone}" style="--event-x:${x}px;--event-lift:${lift}px;--event-delay:${delay}ms"><div class="vehicle-timeline-event-card"><span class="vehicle-timeline-event-icon">${svg(event.icon)}</span><div><small>${esc(event.eyebrow)} · ${esc(event.dateLabel)}</small><strong>${esc(event.title)}</strong><p>${esc(event.detail||'')}</p></div></div><span class="vehicle-timeline-stem"></span><span class="vehicle-timeline-dot"></span><time>${esc(event.date.toLocaleDateString('en-US',{month:'short',year:'numeric'}))}</time></article>`}).join('');
+ const markers=events.map((event,index)=>{const x=94+index*spacing,lift=laneLifts[index%laneLifts.length],progress=Math.max(0,Math.min(1,(x-axisStart)/travelDistance)),delay=Math.max(0,Math.min(timelineAnimationMs-180,Math.round(progress*timelineAnimationMs)-revealLeadMs)),documentIndex=Number.isInteger(event.documentIndex)?event.documentIndex:-1,hasDocument=documentIndex>=0,cardOpen=hasDocument?`<button type="button" class="vehicle-timeline-event-card has-document" onclick="openDocument(${documentIndex})" title="Open ${esc(event.documentName||'linked document')}" aria-label="Open ${esc(event.documentName||'linked document')}">`:'<div class="vehicle-timeline-event-card">',cardClose=hasDocument?'</button>':'</div>';return `<article class="vehicle-timeline-event tone-${event.tone}" style="--event-x:${x}px;--event-lift:${lift}px;--event-delay:${delay}ms">${cardOpen}<span class="vehicle-timeline-event-icon">${svg(event.icon)}</span><div><small>${esc(event.eyebrow)} · ${esc(event.dateLabel)}</small><strong>${esc(event.title)}</strong><p>${esc(event.detail||'')}</p></div>${cardClose}<span class="vehicle-timeline-stem"></span><span class="vehicle-timeline-dot"></span><time>${esc(event.date.toLocaleDateString('en-US',{month:'short',year:'numeric'}))}</time></article>`}).join('');
  return `<section class="card vehicle-timeline-card">
    <div class="vehicle-timeline-toolbar"><div><span class="section-kicker">VEHICLE JOURNEY</span><h2>History</h2><p>${esc(countText)}${garageTimelineObdLoading?' · loading mileage history…':''}</p></div><div class="vehicle-timeline-filters" aria-label="Timeline marker filters">${timelineFilterButtons(allEvents)}</div></div>
    ${events.length?`<div class="vehicle-timeline-frame ${animate?'timeline-animate':''}"><div class="vehicle-timeline-scroll"><div class="vehicle-timeline-track" style="width:${trackWidth}px"><div class="vehicle-timeline-axis"></div>${markers}</div></div><div class="vehicle-timeline-runner">${timelineVehicleGraphic(vehicle)}</div></div><div class="vehicle-timeline-hint">${trackWidth>1200?`${svg('chevronRight')} Scroll horizontally to move through the full history`:'The timeline remains static after the entrance animation.'}</div>`:`<div class="vehicle-timeline-empty">${svg('clock')}<strong>No dated events yet</strong><p>Add mileage, expenses, documents, completed reminders, or service records to build this vehicle's timeline.</p></div>`}
@@ -2515,6 +2572,7 @@ window.syncManagedUserAccessFields=function(form){const admin=form.elements.role
 window.saveManagedUser=async function(event){event.preventDefault();const form=event.currentTarget,fd=new FormData(form),existing=managedUsers.find(user=>user.id===managedUserEditorId),password=String(fd.get('password')||''),confirmPassword=String(fd.get('confirmPassword')||''),payload={displayName:fd.get('displayName'),username:fd.get('username'),role:fd.get('role'),accessLevel:fd.get('accessLevel')||'ReadWrite',visibilityScope:fd.get('visibilityScope')||'AllVehicles',assignedVehicleIds:fd.getAll('assignedVehicleIds'),isActive:fd.get('isActive')==='on'};if(payload.role!=='Administrator'&&payload.visibilityScope==='SelectedVehicles'&&!payload.assignedVehicleIds.length){toast('Assign at least one visible vehicle');return}if(password!==confirmPassword){toast('The passwords do not match');return}if(!existing&&!password){toast('Enter an initial password');return}if(password&&password.length<12){toast('Password must be at least 12 characters');return}if(!existing)payload.password=password;const button=form.querySelector('button[type=submit]');button.disabled=true;try{await authRequest(existing?`/api/admin/users/${encodeURIComponent(existing.id)}`:'/api/admin/users',{method:existing?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});if(existing&&password)await authRequest(`/api/admin/users/${encodeURIComponent(existing.id)}/reset-password`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({newPassword:password})});managedUserEditorOpen=false;managedUserEditorId=null;const session=await authRequest('/api/auth/session');if(session.authenticated)authSession=session;toast(existing?(password?'User and password updated':'User updated'):'User created');if(isAdministrator())await refreshManagedUsers();else{managedUsers=[];render()}updateProfileChrome()}catch(err){toast(err.message)}finally{button.disabled=false}}
 function notificationSettings(){return state?.notificationSettings||{emailEnabled:false,localAlertsEnabled:true,readIds:[],dismissedIds:[]}}
 function buildNotificationItems(){if(!state)return[];const settings=notificationSettings(),items=[],now=new Date(),push=item=>items.push({...item,id:String(item.id),createdAt:item.createdAt||now.toISOString()}),taskKey=item=>`${String(item.vehicleId||'').toLowerCase()}|${String(item.name||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim()}`,notifiedTaskKeys=new Set();
+ for(const notice of serverNotifications||[]){push({id:notice.id,type:notice.category||'server',tone:notice.tone||'blue',icon:notice.icon||'bell',title:notice.title,detail:notice.detail||'GarageLog server notification.',page:notice.page||'Dashboard',recordId:notice.recordId||'',url:notice.url||'',createdAt:notice.createdUtc||notice.relevantUtc||now.toISOString()})}
  for(const notice of state.systemNotices||[]){if(notice.active===false)continue;push({type:'system',tone:notice.tone||'blue',icon:notice.icon||'info',title:notice.title,detail:notice.detail||'GarageLog system notice.',page:notice.page||'Dashboard',recordId:notice.recordId||'',createdAt:notice.createdAt,id:notice.id})}
  if(availableUpdate?.updateAvailable)push({id:updateNoticeId(),type:'system',tone:'indigo',icon:'download',title:`GarageLog ${availableUpdate.latestVersion} is available`,detail:availableUpdate.releaseName||'View release notes and download the latest version from GitHub.',page:'Dashboard',url:availableUpdate.releaseUrl||'',createdAt:availableUpdate.publishedAtUtc||now.toISOString()})
  if(settings.localAlertsEnabled){for(const item of state.reminders||[]){const status=effectiveReminderStatus(item);if(!['Overdue','Due Soon'].includes(status)||status==='Completed')continue;const vehicle=state.vehicles.find(vehicle=>String(vehicle.id)===String(item.vehicleId));notifiedTaskKeys.add(taskKey(item));push({id:`reminder:${item.id}:${status}`,type:'reminder',tone:status==='Overdue'?'red':'orange',icon:'bell',title:`${item.name} — ${status}`,detail:`${vehicle?vehicleFullName(vehicle):'Vehicle'} · ${item.due||item.rule||'Schedule due'}`,page:'Reminders',recordId:item.id,createdAt:item.updatedAt||item.createdAt||now.toISOString()})}
@@ -2522,9 +2580,9 @@ function buildNotificationItems(){if(!state)return[];const settings=notification
  const docs=state.documents||[],ocrAttention=docs.filter(item=>['needs-ocr','setup-required','failed','index-failed'].includes(String(item.ocrStatus||'').toLowerCase()));if(ocrAttention.length)push({id:`system:ocr:${ocrAttention.length}`,type:'system',tone:'orange',icon:'search',title:`${ocrAttention.length} document${ocrAttention.length===1?' needs':'s need'} search attention`,detail:'Open Documents to review OCR or indexing status.',page:'Documents'});
  for(const item of docs){const expires=parseRecordDate(item.expiresOn);if(!expires)continue;const days=Math.ceil((expires-now)/86400000);if(days>30)continue;push({id:`document-expiry:${item.id}:${item.expiresOn}`,type:'system',tone:days<0?'red':'orange',icon:'file',title:days<0?`${item.name} expired`:`${item.name} expires soon`,detail:days<0?`${Math.abs(days)} day${Math.abs(days)===1?'':'s'} overdue`:`${days} day${days===1?'':'s'} remaining`,page:'Documents',recordId:item.id,createdAt:item.updatedAt||item.addedAt||now.toISOString()})}
  if(settings.emailEnabled)push({id:'system:email-not-configured',type:'system',tone:'blue',icon:'info',title:'Email notification preference is on',detail:'Outbound email delivery still requires a mail-server configuration in a future update.',page:'Reminders'});
- const dismissed=new Set(settings.dismissedIds||[]),severity={red:0,orange:1,blue:2,green:3};return items.filter(item=>!dismissed.has(item.id)).sort((a,b)=>(severity[a.tone]??9)-(severity[b.tone]??9)||String(b.createdAt).localeCompare(String(a.createdAt))).slice(0,40)}
-function renderNotificationCenter(){const panel=document.getElementById('notificationPanel'),badge=document.getElementById('notificationCount'),trigger=document.getElementById('notificationIcon');if(!panel||!badge||!trigger||!state)return;const settings=notificationSettings(),read=new Set(settings.readIds||[]),items=buildNotificationItems(),unread=items.filter(item=>!read.has(item.id)).length;badge.hidden=unread===0;badge.textContent=unread>99?'99+':String(unread);trigger.classList.toggle('has-unread',unread>0);trigger.setAttribute('aria-expanded',notificationPanelOpen?'true':'false');panel.hidden=!notificationPanelOpen;panel.innerHTML=`<div class="notification-panel-header"><div><strong>Notifications</strong><small>${unread} unread · ${items.length} total</small></div>${items.length?`<div class="notification-header-actions"><button class="link-button" onclick="markAllNotificationsRead()">Mark all read</button>${canWrite()?`<button class="link-button clear" onclick="clearAllNotifications()">Clear all</button>`:''}</div>`:''}</div><div class="notification-panel-settings"><span class="${settings.localAlertsEnabled?'on':'off'}">Pop-up alerts ${settings.localAlertsEnabled?'on':'off'}</span><span class="${settings.emailEnabled?'on':'off'}">Email preference ${settings.emailEnabled?'on':'off'}</span></div><div class="notification-list">${items.length?items.map(item=>`<button class="notification-item ${read.has(item.id)?'read':'unread'}" onclick="openGarageNotification(${attrJs(item.id)},${attrJs(item.page)},${attrJs(item.recordId||'')},${attrJs(item.url||'')})"><span class="notification-item-icon ${item.tone}">${svg(item.icon)}</span><span><strong>${esc(item.title)}</strong><small>${esc(item.detail)}</small></span>${!read.has(item.id)?'<i aria-label="Unread"></i>':''}</button>`).join(''):`<div class="notification-empty">${svg('bell')}<strong>No active notifications</strong><p>Due reminders and local system tasks will appear here.</p></div>`}</div><div class="notification-panel-footer"><button class="secondary" onclick="goPage('Reminders');closeNotificationPanel()">Notification Settings</button></div>`}
-window.toggleNotificationPanel=function(){notificationPanelOpen=!notificationPanelOpen;setProfileMenu(false);renderNotificationCenter()}
+ const dismissed=new Set(settings.dismissedIds||[]),severity={red:0,orange:1,blue:2,green:3},unique=new Map();for(const item of items){if(!dismissed.has(item.id))unique.set(item.id,item)}return [...unique.values()].sort((a,b)=>(severity[a.tone]??9)-(severity[b.tone]??9)||String(b.createdAt).localeCompare(String(a.createdAt))).slice(0,40)}
+function renderNotificationCenter(){const panel=document.getElementById('notificationPanel'),badge=document.getElementById('notificationCount'),trigger=document.getElementById('notificationIcon');if(!panel||!badge||!trigger||!state)return;const settings=notificationSettings(),read=new Set(settings.readIds||[]),items=buildNotificationItems(),unread=items.filter(item=>!read.has(item.id)).length;badge.hidden=unread===0;badge.textContent=unread>99?'99+':String(unread);trigger.classList.toggle('has-unread',unread>0);trigger.setAttribute('aria-expanded',notificationPanelOpen?'true':'false');panel.hidden=!notificationPanelOpen;panel.innerHTML=`<div class="notification-panel-header"><div><strong>Notifications</strong><small>${unread} unread · ${items.length} total</small></div>${items.length?`<div class="notification-header-actions"><button class="link-button" onclick="markAllNotificationsRead()">Mark all read</button>${canWrite()?`<button class="link-button clear" onclick="clearAllNotifications()">Clear all</button>`:''}</div>`:''}</div><div class="notification-panel-settings"><span class="${serverNotificationsEnabled?'on':'off'}">Server events ${serverNotificationsEnabled?'on':'off'}</span><span class="${settings.localAlertsEnabled?'on':'off'}">Pop-up alerts ${settings.localAlertsEnabled?'on':'off'}</span></div><div class="notification-list">${items.length?items.map(item=>`<button class="notification-item ${read.has(item.id)?'read':'unread'}" onclick="openGarageNotification(${attrJs(item.id)},${attrJs(item.page)},${attrJs(item.recordId||'')},${attrJs(item.url||'')})"><span class="notification-item-icon ${item.tone}">${svg(item.icon)}</span><span><strong>${esc(item.title)}</strong><small>${esc(item.detail)}</small></span>${!read.has(item.id)?'<i aria-label="Unread"></i>':''}</button>`).join(''):`<div class="notification-empty">${svg('bell')}<strong>No active notifications</strong><p>Due reminders and local system tasks will appear here.</p></div>`}</div><div class="notification-panel-footer"><button class="secondary" onclick="openSettingsPage();closeNotificationPanel()">Notification Settings</button></div>`}
+window.toggleNotificationPanel=async function(){notificationPanelOpen=!notificationPanelOpen;setProfileMenu(false);renderNotificationCenter();if(notificationPanelOpen){await refreshServerNotifications();renderNotificationCenter()}}
 window.closeNotificationPanel=function(){notificationPanelOpen=false;renderNotificationCenter()}
 window.markAllNotificationsRead=async function(){const settings=notificationSettings();settings.readIds=[...new Set([...settings.readIds,...buildNotificationItems().map(item=>item.id)])].slice(-250);renderNotificationCenter();if(canWrite())try{await saveNow()}catch(err){toast(err.message)}}
 window.clearAllNotifications=async function(){if(!canWrite()){toast('Read-only accounts cannot clear notifications');return}const items=buildNotificationItems();if(!items.length)return;const settings=notificationSettings(),ids=new Set(items.map(item=>item.id));settings.dismissedIds=[...new Set([...(settings.dismissedIds||[]),...ids])].slice(-500);settings.readIds=(settings.readIds||[]).filter(id=>!ids.has(id));state.systemNotices=(state.systemNotices||[]).filter(notice=>!ids.has(String(notice.id)));renderNotificationCenter();try{await saveNow();toast('Notifications cleared')}catch(err){toast(err.message)}}
@@ -3236,6 +3294,8 @@ const exportDialog=document.getElementById('exportRecordsDialog');document.getEl
 const infoModal=document.getElementById('infoModal');document.getElementById('infoModalClose').innerHTML=svg('close');document.getElementById('infoModalClose').addEventListener('click',()=>infoModal.close());document.getElementById('infoModalSecondary').addEventListener('click',()=>infoModal.close());document.getElementById('infoModalPrimary').addEventListener('click',()=>{if(infoModalAction)infoModalAction();else infoModal.close()});
 window.exportExpenses=function(){const rows=[['Date','Category','Vendor','Notes','Coverage','Covered Service Value','Amount Paid'],...activeExpenses().map(x=>[x.date,x.category,x.vendor,x.notes,expenseCoverageLabel(x)||'Out of pocket',x.coveredAmount??'',x.amount])];const csv=rows.map(r=>r.map(v=>`"${String(v??'').replaceAll('"','""')}"`).join(',')).join('\n');const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download='garagelog-expenses.csv';a.click();URL.revokeObjectURL(a.href)}
 function formatBytes(bytes){bytes=Number(bytes||0);if(bytes<1024)return`${bytes} B`;if(bytes<1024**2)return`${(bytes/1024).toFixed(1)} KB`;if(bytes<1024**3)return`${(bytes/1024**2).toFixed(1)} MB`;return`${(bytes/1024**3).toFixed(2)} GB`}
+
+window.setInterval(async()=>{if(!authSession?.authenticated||!state)return;const before=(serverNotifications||[]).map(item=>item.id).sort().join('|');await refreshServerNotifications();const after=(serverNotifications||[]).map(item=>item.id).sort().join('|');if(before!==after){if(current==='Dashboard')render();else renderNotificationCenter()}},300000);
 
 bootstrapGarageLog();
 

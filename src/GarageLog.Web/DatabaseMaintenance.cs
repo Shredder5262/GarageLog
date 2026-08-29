@@ -54,6 +54,12 @@ internal static class DatabaseMaintenance
 
         var needsBackup = !await ColumnExistsAsync(connectionString, "AppState", "Revision")
             || !await TableExistsAsync(connectionString, "SchemaMigrations")
+            || !await TableExistsAsync(connectionString, "NotificationServerSettings")
+            || !await TableExistsAsync(connectionString, "NotificationEvents")
+            || !await TableExistsAsync(connectionString, "VehicleRecalls")
+            || !await TableExistsAsync(connectionString, "VehicleRecallSyncStatus")
+            || (await TableExistsAsync(connectionString, "NotificationServerSettings")
+                && !await ColumnExistsAsync(connectionString, "NotificationServerSettings", "RecallCheckSchedule"))
             || (await TableExistsAsync(connectionString, "TelemetryTrips")
                 && !await ColumnExistsAsync(connectionString, "TelemetryTrips", "TripFingerprint"));
 

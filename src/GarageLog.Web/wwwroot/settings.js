@@ -3,6 +3,7 @@ let settingsShares=[];
 let settingsObdDevices=[];
 let settingsObdVehicles=[];
 let settingsOdometerProposals=[];
+let settingsNotificationData=null;
 
 async function settingsCopyText(text,container){
   // Modern Clipboard API first. This works on HTTPS and localhost in
@@ -61,7 +62,8 @@ function settingsScopeLabel(scope){
   return ({
     'vehicles:read':'Vehicle Read',
     'telemetry:write':'Mobile Data Write',
-    'device:sync':'Device Sync'
+    'device:sync':'Device Sync',
+    'notifications:read':'Notification Read'
   })[scope]||scope;
 }
 
@@ -231,6 +233,223 @@ window.dismissSettingsOdometer=async function(tripId){
   try{await authRequest(`/api/odometer-proposals/${encodeURIComponent(tripId)}/dismiss`,{method:'POST'});await refreshSettingsData();render();toast('Odometer proposal dismissed')}catch(error){toast(error.message||'Unable to dismiss odometer proposal')}
 };
 
+function settingsNotificationConfig(){
+  return settingsNotificationData?.settings||{
+    enabled:false,
+    reminderNotificationsEnabled:false,
+    recallNotificationsEnabled:false,
+    reminderLeadDays:7,
+    mileageLeadMiles:500,
+    recallCheckSchedule:'monthly'
+  };
+}
+
+function settingsRecallSummary(){
+  return settingsNotificationData?.recall||{
+    provider:'NHTSA Recall API',providerUrl:'https://www.nhtsa.gov/recalls',eligibleVehicleCount:0,cachedRecallCount:0,
+    lastCheckedUtc:null,lastSuccessUtc:null,lastError:null,nextAutomaticCheckUtc:null,vehicles:[]
+  };
+}
+
+function normalizeRecallSchedule(value){const key=String(value||'monthly').toLowerCase();return ['manual','startup','monthly','quarterly','semiannual'].includes(key)?key:'monthly'}
+function recallScheduleLabel(value){return ({manual:'Manual only',startup:'At server startup',monthly:'Once a month',quarterly:'Every 3 months',semiannual:'Every 6 months'})[normalizeRecallSchedule(value)]}
+function recallNextCheckText(recall,config){const schedule=normalizeRecallSchedule(config.recallCheckSchedule);if(schedule==='manual')return'Manual checks only';if(schedule==='startup')return'Next server startup';return recall.nextAutomaticCheckUtc?`Next ${settingsFormatDate(recall.nextAutomaticCheckUtc)}`:'Will check when due'}
+
+function settingsRecallStatusCardMarkup(){
+  const recall=settingsRecallSummary(),config=settingsNotificationConfig(),vehicles=Array.isArray(recall.vehicles)?recall.vehicles:[],validatedCount=vehicles.filter(vehicle=>vehicle.isValidated).length,needsSetup=vehicles.some(vehicle=>!vehicle.isValidated);
+  const status=needsSetup?'Setup required':recall.lastError&&!recall.lastSuccessUtc?'Error':recall.lastSuccessUtc?'Connected':'Not checked';
+  const statusClass=status==='Connected'?'active':status==='Error'?'revoked':'expired';
+  return `<section class="settings-recall-status-card">
+    <div class="settings-recall-card-heading">
+      <div><span class="settings-card-kicker">RECALL STATUS</span><h3>Current status</h3></div>
+      <span class="settings-status ${statusClass}">${esc(status)}</span>
+    </div>
+    <div class="settings-recall-status-grid">
+      <div><small>Recall source</small><strong>${esc(recall.provider||'NHTSA Recall API')}</strong></div>
+      <div><small>Tracked vehicles</small><strong>${number(recall.eligibleVehicleCount||0)}</strong><span>${number(validatedCount)} validated for NHTSA</span></div>
+      <div><small>Cached campaigns</small><strong>${number(recall.cachedRecallCount||0)}</strong><span>latest NHTSA results</span></div>
+      <div><small>Last successful check</small><strong>${recall.lastSuccessUtc?esc(settingsFormatDate(recall.lastSuccessUtc)):'Not yet'}</strong><span>${esc(recallNextCheckText(recall,config))}</span></div>
+    </div>
+  </section>`;
+}
+function settingsRecallIssueMarkup(){
+  const recall=settingsRecallSummary();
+  return recall.lastError?`<div class="settings-recall-issue"><span class="settings-recall-issue-icon">!</span><span><strong>Last recall check issue</strong><small>${esc(recall.lastError)}</small></span></div>`:'';
+}
+function settingsRecallResultsMarkup(){
+  const recall=settingsRecallSummary(),vehicles=Array.isArray(recall.vehicles)?recall.vehicles:[];
+  return `<section class="settings-recall-results">
+    <div class="settings-recall-results-heading"><div><span class="settings-card-kicker">VEHICLE RESULTS</span><h3>Vehicle Recall Results</h3></div><span>${number(vehicles.length)} tracked</span></div>
+    ${vehicles.length?`<div class="settings-recall-vehicle-list">${vehicles.map(vehicle=>{
+      const count=Number(vehicle.recallCount||0),validated=Boolean(vehicle.isValidated),vehicleStatus=!validated?'Setup required':vehicle.lastError?'Error':count>0?'Recall found':'No campaigns';
+      return `<div class="settings-recall-vehicle-row ${validated?'validated':'needs-match'}">
+        <span class="settings-recall-vehicle-main"><strong>${esc(vehicle.vehicleName)}</strong><small>GarageLog: ${esc(vehicle.garageQuery||vehicle.vehicleName||'')}</small>${validated?`<em>${svg('check')} NHTSA: ${esc(vehicle.query||'')}</em>`:`<em class="needs-match">${svg('warning')} Validate the NHTSA vehicle identity before recall checks run.</em>`}</span>
+        <span class="settings-recall-vehicle-result"><b>${number(count)}</b><small>campaign${count===1?'':'s'}</small><em class="${!validated?'setup':vehicle.lastError?'error':count>0?'attention':'clear'}">${esc(vehicleStatus)}</em></span>
+        ${isAdministrator()?`<button type="button" class="secondary compact-action settings-recall-match-button" onclick="openRecallVehicleMatch('${esc(vehicle.vehicleId)}')">${validated?'Change Match':'Match Vehicle'}</button>`:''}
+      </div>`}).join('')}</div>`:`<div class="settings-recall-results-empty">No eligible vehicles are available for recall checks yet.</div>`}
+  </section>`;
+}
+
+let recallVehicleMatchState=null;
+function recallMatchOption(value,selected){return `<option value="${esc(value)}" ${String(value)===String(selected)?'selected':''}>${esc(value)}</option>`}
+function recallMatchDialogMarkup(match){
+  const suggestions=Array.isArray(match.suggestions)?match.suggestions:[],makes=Array.isArray(match.availableMakes)?match.availableMakes:[],models=Array.isArray(match.availableModels)?match.availableModels:[];
+  const year=String(match.nhtsaYear||match.garageYear||''),make=String(match.nhtsaMake||suggestions[0]?.make||''),model=String(match.nhtsaModel||suggestions[0]?.model||'');
+  return `<div class="modal-header"><div><span class="account-eyebrow">NHTSA VEHICLE MATCH</span><h3>${esc(match.vehicleName)}</h3><p>Confirm the NHTSA identity GarageLog should use for automated recall checks.</p></div><button type="button" class="icon-btn recall-match-close">${svg('close')}</button></div>
+    <div class="recall-match-body">
+      <section class="recall-match-garage"><small>GARAGELOG VEHICLE</small><strong>${esc(`${match.garageYear} ${match.garageMake} ${match.garageModel}`)}</strong><span>This vehicle record will not be changed.</span></section>
+      ${suggestions.length?`<section class="recall-match-suggestions"><div><small>SUGGESTED NHTSA MATCH${suggestions.length===1?'':'ES'}</small><p>Select a suggestion or adjust the NHTSA fields below.</p></div><div>${suggestions.slice(0,4).map((item,index)=>`<button type="button" class="${index===0&&!match.isValidated?'recommended':''}" onclick="applyRecallMatchSuggestion('${esc(item.year)}','${esc(item.make)}','${esc(item.model)}')"><span>${esc(`${item.year} ${item.make} ${item.model}`)}</span>${index===0&&!match.isValidated?'<b>Recommended</b>':''}</button>`).join('')}</div></section>`:''}
+      <section class="recall-match-fields"><div class="recall-match-fields-heading"><small>NHTSA LOOKUP IDENTITY</small><strong>Adjust query information</strong></div><div class="recall-match-grid">
+        <label><span>Model Year</span><input id="recallMatchYear" type="number" min="1900" max="2100" value="${esc(year)}" onchange="reloadRecallMatchMakes()"></label>
+        <label><span>Make</span><select id="recallMatchMake" onchange="reloadRecallMatchModels()">${makes.map(value=>recallMatchOption(value,make)).join('')}</select></label>
+        <label><span>Model</span><select id="recallMatchModel">${models.map(value=>recallMatchOption(value,model)).join('')}</select></label>
+      </div><p class="recall-match-help">GarageLog validates these values against NHTSA's recall catalog before saving them.</p></section>
+    </div>
+    <div class="modal-actions"><button type="button" class="secondary recall-match-cancel">Cancel</button><button type="button" class="primary recall-match-save">${match.isValidated?'Save Match':'Confirm NHTSA Match'}</button></div>`;
+}
+window.openRecallVehicleMatch=async function(vehicleId){
+  if(!isAdministrator())return;
+  const dialog=ensureDynamicDialog('recallVehicleMatchDialog','recall-vehicle-match-dialog');
+  dialog.innerHTML=`<div class="modal-header"><div><h3>NHTSA Vehicle Match</h3><p>Looking up NHTSA vehicle catalog…</p></div><button type="button" class="icon-btn recall-match-close">${svg('close')}</button></div><div class="recall-match-loading">${svg('refresh')} Loading vehicle matches…</div>`;
+  dialog.querySelector('.recall-match-close').onclick=()=>dialog.close();dialog.showModal();
+  try{recallVehicleMatchState=await authRequest(`/api/recalls/match/${encodeURIComponent(vehicleId)}`);renderRecallVehicleMatchDialog(dialog)}catch(error){dialog.close();toast(error.message||'Unable to load NHTSA vehicle matches')}
+};
+function renderRecallVehicleMatchDialog(dialog=document.getElementById('recallVehicleMatchDialog')){
+  if(!dialog||!recallVehicleMatchState)return;dialog.innerHTML=recallMatchDialogMarkup(recallVehicleMatchState);
+  const close=()=>dialog.close();dialog.querySelector('.recall-match-close').onclick=close;dialog.querySelector('.recall-match-cancel').onclick=close;dialog.querySelector('.recall-match-save').onclick=saveRecallVehicleMatch;
+}
+window.applyRecallMatchSuggestion=async function(year,make,model){
+  const yearInput=document.getElementById('recallMatchYear');if(yearInput)yearInput.value=year;
+  await loadRecallMatchMakes(year,make);await loadRecallMatchModels(year,make,model);
+};
+async function loadRecallMatchMakes(year,selectedMake=''){
+  const select=document.getElementById('recallMatchMake');if(!select)return;select.disabled=true;
+  try{const data=await authRequest(`/api/recalls/catalog/makes?year=${encodeURIComponent(year)}`),makes=Array.isArray(data.makes)?data.makes:[];select.innerHTML=makes.map(value=>recallMatchOption(value,selectedMake)).join('');if(!select.value&&makes.length)select.value=makes[0]}finally{select.disabled=false}
+}
+async function loadRecallMatchModels(year,make,selectedModel=''){
+  const select=document.getElementById('recallMatchModel');if(!select)return;select.disabled=true;
+  try{const data=await authRequest(`/api/recalls/catalog/models?year=${encodeURIComponent(year)}&make=${encodeURIComponent(make)}`),models=Array.isArray(data.models)?data.models:[];select.innerHTML=models.map(value=>recallMatchOption(value,selectedModel)).join('');if(!select.value&&models.length)select.value=models[0]}finally{select.disabled=false}
+}
+window.reloadRecallMatchMakes=async function(){
+  const year=document.getElementById('recallMatchYear')?.value||'';await loadRecallMatchMakes(year);const make=document.getElementById('recallMatchMake')?.value||'';await loadRecallMatchModels(year,make)
+};
+window.reloadRecallMatchModels=async function(){const year=document.getElementById('recallMatchYear')?.value||'',make=document.getElementById('recallMatchMake')?.value||'';await loadRecallMatchModels(year,make)};
+async function saveRecallVehicleMatch(){
+  if(!recallVehicleMatchState)return;const dialog=document.getElementById('recallVehicleMatchDialog'),button=dialog?.querySelector('.recall-match-save');
+  const year=document.getElementById('recallMatchYear')?.value||'',make=document.getElementById('recallMatchMake')?.value||'',model=document.getElementById('recallMatchModel')?.value||'';
+  if(button){button.disabled=true;button.textContent='Validating…'}
+  try{const result=await authRequest('/api/recalls/match',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({vehicleId:recallVehicleMatchState.vehicleId,year,make,model})});settingsNotificationData={settings:settingsNotificationConfig(),recall:result.summary};dialog?.close();recallVehicleMatchState=null;render();toast(`NHTSA match saved: ${year} ${make} ${model}`)}catch(error){toast(error.message||'Unable to save NHTSA vehicle match');if(button){button.disabled=false;button.textContent=recallVehicleMatchState.isValidated?'Save Match':'Confirm NHTSA Match'}}
+}
+
+function settingsNotificationsSection(){
+  const config=settingsNotificationConfig(),disabled=isAdministrator()?'':'disabled',nestedDisabled=!isAdministrator()||!config.enabled?'disabled':'',recallDisabled=!isAdministrator()||!config.recallNotificationsEnabled?'disabled':'';
+  return `<section class="card settings-section settings-recalls-section">
+    <div class="settings-section-heading settings-notifications-heading settings-recalls-heading">
+      <div class="settings-recall-heading-copy">
+        <span class="account-eyebrow">VEHICLE SAFETY</span>
+        <h2>Recall Monitoring</h2>
+        <p>Check active GarageLog vehicles against NHTSA's official year/make/model recall catalog.</p>
+      </div>
+      <div class="settings-recall-heading-actions">
+        <img class="settings-nhtsa-logo" src="/assets/nhtsa-logo.png" alt="NHTSA" loading="lazy">
+        ${isAdministrator()?`<button class="primary compact-action settings-recall-check-button" type="button" ${recallDisabled} onclick="checkVehicleRecallsNow()">${svg('refresh')} Check NHTSA Now</button>`:''}
+      </div>
+    </div>
+
+    <div class="settings-recall-standalone-body">
+      <div class="settings-recall-overview-grid">
+        <section class="settings-recall-settings-card">
+          <div class="settings-recall-card-heading"><div><span class="settings-card-kicker">RECALL SETTINGS</span><h3>Monitoring</h3></div></div>
+          <label class="settings-feature-toggle settings-recall-master-toggle">
+            <span><strong>Monitor vehicle recalls</strong><small>Disabled by default because this sends year, make, and model to NHTSA.</small></span>
+            <input type="checkbox" role="switch" ${config.recallNotificationsEnabled?'checked':''} ${disabled} onchange="updateServerNotificationSetting('recallNotificationsEnabled',this.checked)">
+          </label>
+          <label class="settings-recall-interval ${config.recallNotificationsEnabled?'':'disabled'}">
+            <span>Automatic check schedule</span>
+            <select ${!isAdministrator()||!config.recallNotificationsEnabled?'disabled':''} onchange="updateServerNotificationSetting('recallCheckSchedule',this.value)">
+              ${[['manual','Manual only'],['startup','At server startup'],['monthly','Once a month'],['quarterly','Every 3 months'],['semiannual','Every 6 months']].map(([value,label])=>`<option value="${value}" ${normalizeRecallSchedule(config.recallCheckSchedule)===value?'selected':''}>${label}</option>`).join('')}
+            </select>
+            <small>${normalizeRecallSchedule(config.recallCheckSchedule)==='manual'?'GarageLog checks only when Check NHTSA Now is selected.':normalizeRecallSchedule(config.recallCheckSchedule)==='startup'?'GarageLog checks once when the server starts.':`GarageLog checks automatically ${recallScheduleLabel(config.recallCheckSchedule).toLowerCase()}.`}</small>
+          </label>
+        </section>
+        ${settingsRecallStatusCardMarkup()}
+      </div>
+      ${settingsRecallIssueMarkup()}
+      ${settingsRecallResultsMarkup()}
+    </div>
+  </section>
+
+  <section class="card settings-section settings-notifications-section">
+    <div class="settings-section-heading settings-notifications-heading">
+      <div>
+        <div class="settings-notifications-title-row"><span class="account-eyebrow">SERVER NOTIFICATIONS</span><span class="settings-experimental-badge">Experimental</span></div>
+        <h2>Notifications</h2>
+        <p>Control the server-side alerts GarageLog can surface now and deliver to GarageLog Mobile later.</p>
+        <p class="settings-experimental-note"><strong>Experimental:</strong> Server-side alert events work now; mobile push delivery is still being developed.</p>
+      </div>
+      ${isAdministrator()?`<button class="secondary compact-action" type="button" onclick="runServerNotificationEvaluation()">${svg('bell')} Evaluate Now</button>`:''}
+    </div>
+
+    <div class="settings-notification-standalone-body">
+      <label class="settings-feature-toggle settings-server-master">
+        <span><strong>Server notifications</strong><small>Master switch for persisted notification events.</small></span>
+        <input type="checkbox" role="switch" ${config.enabled?'checked':''} ${disabled} onchange="updateServerNotificationSetting('enabled',this.checked)">
+      </label>
+
+      <label class="settings-feature-toggle ${config.enabled?'':'disabled'}">
+        <span><strong>Reminder &amp; maintenance alerts</strong><small>Create alerts as date and mileage reminders approach.</small></span>
+        <input type="checkbox" role="switch" ${config.reminderNotificationsEnabled?'checked':''} ${nestedDisabled} onchange="updateServerNotificationSetting('reminderNotificationsEnabled',this.checked)">
+      </label>
+
+      <div class="settings-notification-inline-fields ${config.enabled?'':'disabled'}">
+        <label>
+          <span>Reminder lead time</span>
+          <div><input type="number" min="0" max="90" step="1" value="${Number(config.reminderLeadDays||0)}" ${nestedDisabled} onchange="updateServerNotificationSetting('reminderLeadDays',Number(this.value))"><em>days</em></div>
+          <small>Alert this many days before a due date.</small>
+        </label>
+        <label>
+          <span>Mileage lead</span>
+          <div><input type="number" min="0" max="10000" step="50" value="${Number(config.mileageLeadMiles||0)}" ${nestedDisabled} onchange="updateServerNotificationSetting('mileageLeadMiles',Number(this.value))"><em>miles</em></div>
+          <small>Alert this many miles before a mileage target.</small>
+        </label>
+      </div>
+    </div>
+  </section>`;
+}
+
+window.updateServerNotificationSetting=async function(key,value){
+  if(!isAdministrator()){toast('Administrator access is required');return}
+  const current=settingsNotificationConfig(),next={...current,[key]:value};
+  next.reminderLeadDays=Math.max(0,Math.min(90,Number(next.reminderLeadDays||0)));
+  next.mileageLeadMiles=Math.max(0,Math.min(10000,Number(next.mileageLeadMiles||0)));
+  next.recallCheckSchedule=normalizeRecallSchedule(next.recallCheckSchedule);
+  try{
+    settingsNotificationData=await authRequest('/api/settings/notifications',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(next)});
+    await refreshServerNotifications().catch(()=>{});
+    render();
+    toast(key.startsWith('recall')?'Recall monitoring settings saved':'Notification settings saved');
+    if(key==='recallNotificationsEnabled'&&value){const unmatched=(settingsRecallSummary().vehicles||[]).find(vehicle=>!vehicle.isValidated);if(unmatched)setTimeout(()=>openRecallVehicleMatch(unmatched.vehicleId),80)}
+  }catch(error){toast(error.message||'Unable to save notification settings')}
+};
+
+window.runServerNotificationEvaluation=async function(){
+  if(!isAdministrator())return;
+  try{await authRequest('/api/notifications/evaluate',{method:'POST'});await Promise.all([refreshSettingsData(),refreshServerNotifications()]);render();toast('Notification rules evaluated')}catch(error){toast(error.message||'Unable to evaluate notifications')}
+};
+
+window.checkVehicleRecallsNow=async function(){
+  if(!isAdministrator())return;
+  const button=document.querySelector('.settings-recall-check-button');if(button){button.disabled=true;button.textContent='Checking NHTSA…'}
+  try{
+    const result=await authRequest('/api/recalls/check',{method:'POST'});
+    settingsNotificationData={settings:settingsNotificationConfig(),recall:result.summary};
+    await refreshServerNotifications().catch(()=>{});
+    render();
+    const checked=Number(result.result?.vehiclesChecked||0),found=Number(result.result?.campaignsFound||0),errors=Number(result.result?.errors||0),needsValidation=Number(result.result?.vehiclesNeedingValidation||0);
+    toast(needsValidation?`${needsValidation} vehicle${needsValidation===1?' needs':'s need'} NHTSA matching before recall checks can run`:errors?`Checked ${checked} vehicle${checked===1?'':'s'} · ${errors} issue${errors===1?'':'s'}`:`Checked ${checked} vehicle${checked===1?'':'s'} · ${found} campaign${found===1?'':'s'}`);
+  }catch(error){toast(error.message||'Unable to check NHTSA recalls');if(button){button.disabled=false;button.textContent='Check NHTSA Now'}}
+};
+
 function settingsPage(){
   const activeShares=settingsShares.filter(share=>share.status==='Active').length;
   const expiredShares=settingsShares.filter(share=>share.status==='Expired').length;
@@ -283,6 +502,8 @@ function settingsPage(){
       <div class="settings-appearance-note">${isAdministrator()?'These colors apply to the GarageLog server interface for all users. Highlight color changes selected navigation, unread notification accents, and interactive accents without changing the bell background or semantic status colors such as warning, success, or danger. Text contrast adjusts automatically for darker panel selections.':'Server appearance can only be changed by an administrator.'}</div>
     </section>
 
+    ${settingsNotificationsSection()}
+
     <section class="card settings-section">
       <div class="settings-section-heading">
         <div>
@@ -330,15 +551,14 @@ function settingsPage(){
 }
 
 async function refreshSettingsData(){
-  const jobs=[listDocumentShares().then(shares=>{settingsShares=shares||[]})];
+  const jobs=[listDocumentShares().then(shares=>{settingsShares=shares||[]}),authRequest('/api/settings/notifications').then(result=>{settingsNotificationData=result})];
 
   if(isAdministrator()){
     jobs.push(
       authRequest('/api/api-tokens')
         .then(result=>{settingsApiTokens=result.tokens||[]}),
       authRequest('/api/obd-devices')
-        .then(result=>{settingsObdDevices=result.devices||[];settingsObdVehicles=result.vehicles||[];settingsOdometerProposals=result.odometerProposals||[]})
-    );
+        .then(result=>{settingsObdDevices=result.devices||[];settingsObdVehicles=result.vehicles||[];settingsOdometerProposals=result.odometerProposals||[]})    );
   }else{
     settingsApiTokens=[];
   }
@@ -373,6 +593,7 @@ window.openApiTokenCreator=function(){
           <label class="settings-check"><input type="checkbox" name="scope" value="vehicles:read" checked><span><strong>Read vehicle information</strong><small>vehicles:read</small></span></label>
           <label class="settings-check"><input type="checkbox" name="scope" value="telemetry:write" checked><span><strong>Write mobile data</strong><small>telemetry:write · telemetry, mileage, receipts</small></span></label>
           <label class="settings-check"><input type="checkbox" name="scope" value="device:sync" checked><span><strong>Device synchronization</strong><small>device:sync</small></span></label>
+          <label class="settings-check"><input type="checkbox" name="scope" value="notifications:read" checked><span><strong>Read server notifications</strong><small>notifications:read · prepares GarageLog Mobile for notification delivery</small></span></label>
         </fieldset>
 
         <label>Expiration

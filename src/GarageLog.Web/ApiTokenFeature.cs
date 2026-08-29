@@ -16,7 +16,8 @@ static class ApiTokenFeature
     {
         "vehicles:read",
         "telemetry:write",
-        "device:sync"
+        "device:sync",
+        "notifications:read"
     };
 
     public static async Task InitializeAsync(string connectionString)
@@ -393,6 +394,24 @@ static class ApiTokenFeature
                 timeUtc = DateTimeOffset.UtcNow
             });
         }).AllowAnonymous();
+
+        app.MapGet("/api/mobile/notifications", async (HttpContext context, int? limit) =>
+        {
+            var token = await AuthenticateBearerAsync(connectionString, context, "notifications:read");
+            if (token is null)
+                return Results.Unauthorized();
+
+            var settings = await NotificationFeature.ReadSettingsAsync(connectionString);
+            var notifications = await NotificationFeature.ReadActiveNotificationsAsync(
+                connectionString,
+                visibleVehicleIds: null,
+                limit: limit ?? 80);
+            return Results.Ok(new
+            {
+                enabled = settings.Enabled,
+                notifications
+            });
+        });
 
         app.MapGet("/api/mobile/vehicles", async (HttpContext context) =>
         {
