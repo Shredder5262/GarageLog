@@ -6,6 +6,11 @@ let current='Dashboard';
 let currentFilter='All';
 let currentGarageFilter='All Vehicles';
 let currentGarageSort='Service Due';
+let garageTimelineVehicleId=null;
+let garageTimelineFilter='all';
+let garageTimelineAnimate=false;
+let garageTimelineObdProposals=[];
+let garageTimelineObdLoading=false;
 let documentSearchQuery='';
 let topSearchQuery='';
 let documentIndexProgress={running:false,completed:0,total:0,currentName:''};
@@ -1610,6 +1615,11 @@ function dashboard(){
 }
 
 function garage(){
+ if(garageTimelineVehicleId){
+   const timelineVehicle=state.vehicles.find(vehicle=>String(vehicle.id)===String(garageTimelineVehicleId));
+   if(timelineVehicle)return garageVehicleDetail(timelineVehicle);
+   garageTimelineVehicleId=null;
+ }
  const vehicleTypes=['All Vehicles','Cars','Trucks','Motorcycles','Trailers'];
  const filtered=state.vehicles.filter(v=>currentGarageFilter==='All Vehicles'||`${v.type}s`===currentGarageFilter||v.type===currentGarageFilter.replace(/s$/,''));
  const vehicles=[...filtered].sort((a,b)=>{if(currentGarageSort==='Vehicle Name')return vehicleFullName(a).localeCompare(vehicleFullName(b));if(currentGarageSort==='Mileage')return Number(b.mileage||0)-Number(a.mileage||0);const aNext=nextMaintenanceForVehicle(a.id),bNext=nextMaintenanceForVehicle(b.id);if(!aNext&&!bNext)return vehicleFullName(a).localeCompare(vehicleFullName(b));if(!aNext)return 1;if(!bNext)return-1;return compareMaintenancePriority(aNext,bNext)||vehicleFullName(a).localeCompare(vehicleFullName(b))});
@@ -1680,10 +1690,115 @@ function garageVehicleCard(vehicle){
    <div class="garage-card-actions">
      ${archived?`<button class="secondary" disabled>${esc(vehicle.lifecycleStatus)}</button>`:`<button class="secondary" onclick="${active?`openVehicleDashboard('${vehicle.id}')`:`makeVehicleActive('${vehicle.id}')`}">${active?'View Dashboard':'Make Active'}</button>`}
      <button class="secondary" onclick="addVehicleRecord('${vehicle.id}')" ${archived?'disabled':''}>Add Record</button>
+     <button class="secondary garage-timeline-button" onclick="openVehicleTimeline('${vehicle.id}')">${svg('clock')} Timeline</button>
      <button class="mini-btn" title="Edit vehicle" onclick="openModal('vehicle',${vehicleIndex})">${svg('edit')}</button>
    </div>
  </article>`;
 }
+
+function timelineVehicleGraphic(vehicle){
+ const type=normalizedVehicleType(vehicle);
+ const images={Car:'/assets/timeline-car.png',Truck:'/assets/timeline-truck.png',Motorcycle:'/assets/timeline-motorcycle.png',Trailer:'/assets/timeline-trailer.png'};
+ return `<img src="${images[type]||images.Car}" alt="" aria-hidden="true" draggable="false">`
+}
+function timelineEventDate(value){const date=parseRecordDate(value);return date&&!Number.isNaN(date.getTime())?date:null}
+function timelineEventLabel(date){return date.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}
+function timelineEventKey(date){return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`}
+function buildVehicleTimelineEvents(vehicle){
+ const vehicleId=String(vehicle.id),events=[],push=(event)=>{const date=timelineEventDate(event.date);if(!date)return;events.push({...event,date,dateMs:date.getTime(),dateLabel:timelineEventLabel(date),filters:Array.isArray(event.filters)?event.filters:[event.kind]})};
+ if(vehicle.acquiredDate)push({id:`vehicle-acquired-${vehicleId}`,date:vehicle.acquiredDate,kind:'vehicle',tone:'blue',icon:'car',eyebrow:'Vehicle',title:'Vehicle acquired',detail:vehicle.acquiredMileage===null||vehicle.acquiredMileage===undefined?'Added to GarageLog':`${number(vehicle.acquiredMileage)} mi at acquisition`,filters:['vehicle','mileage']});
+ if(vehicle.archivedAt)push({id:`vehicle-archive-${vehicleId}`,date:vehicle.archivedAt,kind:'vehicle',tone:'slate',icon:'archive',eyebrow:'Vehicle',title:`Vehicle ${String(vehicle.lifecycleStatus||'archived').toLowerCase()}`,detail:'Lifecycle status changed in GarageLog',filters:['vehicle']});
+ const expenses=(state.expenses||[]).filter(item=>String(item.vehicleId)===vehicleId);
+ const expenseIds=new Set(expenses.map(item=>String(item.id||'')));
+ for(const item of expenses){
+   const category=String(item.category||'Other'),fuel=category==='Fuel',service=['Maintenance','Repair','Parts'].includes(category),insurance=category==='Insurance',registration=category==='Registration',title=fuel?'Fuel fill-up':service?expenseServiceLabel(item):category,parts=[];
+   if(item.vendor)parts.push(String(item.vendor));
+   if(fuel&&Number(item.gallons)>0)parts.push(`${Number(item.gallons).toFixed(3).replace(/0+$/,'').replace(/\.$/,'')} gal`);
+   if(Number(item.amount)>=0)parts.push(money(item.amount));
+   if(item.coverageType&&String(item.coverageType)!=='None')parts.push(`${item.coverageType} covered`);
+   if(fuel&&Number(item.odometer)>0)parts.push(`${number(item.odometer)} mi`);
+   const filters=['expenses'];
+   if(fuel)filters.push('fuel');
+   if(service)filters.push('service');
+   if(insurance)filters.push('insurance');
+   if(registration)filters.push('registration');
+   push({id:`expense-${item.id||Math.random()}`,date:item.date||item.createdAt,kind:fuel?'fuel':service?'maintenance':'expense',tone:fuel?'orange':service?'green':insurance?'purple':registration?'teal':'purple',icon:fuel?'fuel':service?'wrench':insurance?'shield':registration?'calendar':'receipt',eyebrow:fuel?'Fuel':service?'Service':insurance?'Insurance':registration?'Registration':'Expense',title:title||category,detail:parts.filter(Boolean).join(' · ')||String(item.notes||''),filters});
+ }
+ const appliedObd=(garageTimelineObdProposals||[]).filter(item=>String(item.vehicleId||'')===vehicleId&&String(item.effectiveStatus||item.storedStatus||'').toLowerCase()==='applied');
+ const obdMileage=appliedObd.map(item=>Number(item.candidateOdometer)).filter(Number.isFinite);
+ for(const item of appliedObd)push({id:`obd-${item.tripId}`,date:item.appliedUtc||item.endedAt,kind:'mileage',tone:'indigo',icon:'gauge',eyebrow:'Mileage',title:'Odometer updated',detail:Number(item.candidateOdometer)>0?`OBD · ${number(item.candidateOdometer)} mi${Number(item.distanceMiles)>0?` · ${Number(item.distanceMiles).toFixed(1)} mi trip`:''}`:'OBD telemetry trip applied',filters:['mileage']});
+ for(const reading of vehicle.mileageHistory||[]){
+   const source=String(reading?.source||'Mileage update'),mileage=Number(reading?.mileage);
+   if(String(reading?.expenseId||'')&&expenseIds.has(String(reading.expenseId)))continue;
+   if(vehicle.acquiredDate&&source.toLowerCase().includes('acquired')&&timelineEventKey(timelineEventDate(reading.date)||new Date(0))===timelineEventKey(timelineEventDate(vehicle.acquiredDate)||new Date(1)))continue;
+   if(source.toLowerCase().includes('garagelog obd')&&obdMileage.some(value=>Math.abs(value-mileage)<.05))continue;
+   push({id:`mileage-${reading?.date||''}-${mileage}-${source}`,date:reading?.date,kind:'mileage',tone:source.toLowerCase().includes('obd')?'indigo':'blue',icon:'gauge',eyebrow:'Mileage',title:Number.isFinite(mileage)?`${number(mileage)} mi`:'Mileage updated',detail:source.toLowerCase().includes('obd')?`OBD · ${source}`:source,filters:['mileage']});
+ }
+ for(const item of state.documents||[]){
+   if(String(item.vehicleId)!==vehicleId)continue;
+   const category=normalizeDocumentCategory(item.category),filters=['documents'];
+   if(category==='Insurance')filters.push('insurance');
+   if(category==='Registration')filters.push('registration');
+   push({id:`document-${item.id}`,date:['Insurance','Registration'].includes(category)?(item.startsOn||item.date||item.addedAt):(item.addedAt||item.date||item.startsOn),kind:'document',tone:category==='Insurance'?'purple':category==='Registration'?'teal':'slate',icon:category==='Insurance'?'shield':category==='Registration'?'calendar':'file',eyebrow:category==='Insurance'?'Insurance':category==='Registration'?'Registration':'Document',title:item.name||'Document added',detail:[category,item.shop].filter(Boolean).join(' · ')||'Added to vehicle records',filters})
+ }
+ const reminders=(state.reminders||[]).filter(item=>String(item.vehicleId)===vehicleId);
+ for(const item of reminders){
+   if(String(item.status||'').toLowerCase()!=='completed')continue;
+   const maintenanceReminder=Boolean(item.maintenanceId||(state.maintenance||[]).some(entry=>String(entry.vehicleId)===vehicleId&&String(entry.reminderId||'')===String(item.id||''))),name=String(item.name||''),lowerName=name.toLowerCase(),filters=['reminders'];
+   if(maintenanceReminder)filters.push('service');
+   if(lowerName.includes('insurance'))filters.push('insurance');
+   if(lowerName.includes('registration')||lowerName.includes('license')||lowerName.includes('title'))filters.push('registration');
+   push({id:`reminder-${item.id}`,date:item.completedAt||item.updatedAt||item.due,kind:'reminder',tone:filters.includes('insurance')?'purple':filters.includes('registration')?'teal':'teal',icon:filters.includes('insurance')?'shield':filters.includes('registration')?'calendar':'check',eyebrow:filters.includes('insurance')?'Insurance':filters.includes('registration')?'Registration':'Reminder',title:item.name||'Reminder completed',detail:item.rule||item.due||'Completed',filters})
+ }
+ const remindersById=new Map(reminders.map(item=>[String(item.id||''),item]));
+ for(const item of state.maintenance||[]){
+   if(String(item.vehicleId)!==vehicleId||String(item.status||'').toLowerCase()!=='completed')continue;
+   const linked=remindersById.get(String(item.reminderId||'')),eventDate=item.completedAt||linked?.completedAt||item.updatedAt;
+   if(!eventDate||(linked&&String(linked.status||'').toLowerCase()==='completed'))continue;
+   push({id:`maintenance-${item.id}`,date:eventDate,kind:'maintenance',tone:'green',icon:'wrench',eyebrow:'Maintenance',title:item.name||'Maintenance completed',detail:item.interval||item.due||'Completed service',filters:['service']});
+ }
+ return events.sort((a,b)=>a.dateMs-b.dateMs||String(a.title).localeCompare(String(b.title)))
+}
+function timelineFilterDefinitions(events){
+ const definitions=[['all','All','clock'],['fuel','Fuel','fuel'],['service','Service History','wrench'],['insurance','Insurance','shield'],['registration','Registration','calendar'],['mileage','Mileage','gauge'],['expenses','Expenses','receipt'],['documents','Documents','file'],['reminders','Reminders','check']];
+ const pinned=new Set(['all','fuel','service','insurance','registration']);
+ return definitions.map(([key,label,icon])=>({key,label,icon,count:key==='all'?events.length:events.filter(event=>event.filters.includes(key)).length})).filter(item=>pinned.has(item.key)||item.count>0)
+}
+function timelineFilterButtons(events){
+ return timelineFilterDefinitions(events).map(item=>`<button type="button" class="${garageTimelineFilter===item.key?'active':''}" onclick="setVehicleTimelineFilter('${item.key}')" ${item.key==='mileage'?'title="Mileage markers include manual and OBD odometer updates"':''}><span class="vehicle-timeline-filter-icon">${svg(item.icon)}</span><span>${item.label}</span><b>${item.count}</b></button>`).join('')
+}
+function garageVehicleDetailHeader(vehicle){
+ return `<section class="card vehicle-timeline-vehicle-header">
+   <div class="vehicle-timeline-photo"><img src="${vehicleImageUrl(vehicle)}" alt="${esc(vehicleFullName(vehicle))}" onerror="this.onerror=null;this.src='${vehicleDefaultImageUrl(vehicle)}'"></div>
+   <div class="vehicle-timeline-identity"><span>${esc(vehicle.type||'Vehicle')}</span><h2>${esc(vehicleFullName(vehicle))}</h2><p>${[vehicle.trim,vehicle.engine,vehicle.drivetrain].filter(Boolean).map(esc).join(' · ')||'Vehicle history generated from GarageLog records.'}</p></div>
+ </section>`
+}
+function garageVehicleTimeline(vehicle){
+ const allEvents=buildVehicleTimelineEvents(vehicle),events=garageTimelineFilter==='all'?allEvents:allEvents.filter(event=>event.filters.includes(garageTimelineFilter)),animate=garageTimelineAnimate;garageTimelineAnimate=false;
+ const timelineAnimationMs=1500,spacing=172,trackWidth=Math.max(1040,events.length*spacing+120),laneLifts=[72,164,256,348],countText=`${events.length} event${events.length===1?'':'s'}${garageTimelineFilter==='all'?'':` · filtered from ${allEvents.length}`}`;
+ const axisStart=38,axisEnd=Math.max(axisStart+1,trackWidth-38),travelDistance=Math.max(1,axisEnd-axisStart),revealLeadMs=90;
+ const markers=events.map((event,index)=>{const x=94+index*spacing,lift=laneLifts[index%laneLifts.length],progress=Math.max(0,Math.min(1,(x-axisStart)/travelDistance)),delay=Math.max(0,Math.min(timelineAnimationMs-180,Math.round(progress*timelineAnimationMs)-revealLeadMs));return `<article class="vehicle-timeline-event tone-${event.tone}" style="--event-x:${x}px;--event-lift:${lift}px;--event-delay:${delay}ms"><div class="vehicle-timeline-event-card"><span class="vehicle-timeline-event-icon">${svg(event.icon)}</span><div><small>${esc(event.eyebrow)} · ${esc(event.dateLabel)}</small><strong>${esc(event.title)}</strong><p>${esc(event.detail||'')}</p></div></div><span class="vehicle-timeline-stem"></span><span class="vehicle-timeline-dot"></span><time>${esc(event.date.toLocaleDateString('en-US',{month:'short',year:'numeric'}))}</time></article>`}).join('');
+ return `<section class="card vehicle-timeline-card">
+   <div class="vehicle-timeline-toolbar"><div><span class="section-kicker">VEHICLE JOURNEY</span><h2>History</h2><p>${esc(countText)}${garageTimelineObdLoading?' · loading mileage history…':''}</p></div><div class="vehicle-timeline-filters" aria-label="Timeline marker filters">${timelineFilterButtons(allEvents)}</div></div>
+   ${events.length?`<div class="vehicle-timeline-frame ${animate?'timeline-animate':''}"><div class="vehicle-timeline-scroll"><div class="vehicle-timeline-track" style="width:${trackWidth}px"><div class="vehicle-timeline-axis"></div>${markers}</div></div><div class="vehicle-timeline-runner">${timelineVehicleGraphic(vehicle)}</div></div><div class="vehicle-timeline-hint">${trackWidth>1200?`${svg('chevronRight')} Scroll horizontally to move through the full history`:'The timeline remains static after the entrance animation.'}</div>`:`<div class="vehicle-timeline-empty">${svg('clock')}<strong>No dated events yet</strong><p>Add mileage, expenses, documents, completed reminders, or service records to build this vehicle's timeline.</p></div>`}
+ </section>`
+}
+function garageVehicleDetail(vehicle){
+ const actions=`<div class="page-actions garage-page-actions"><button class="secondary compact-action" onclick="closeVehicleTimeline()">${svg('chevronRight','timeline-back-icon')} Back to Garage</button><button class="secondary compact-action" onclick="addVehicleRecord('${vehicle.id}')" ${isVehicleArchived(vehicle)?'disabled':''}>${svg('plus')} Add Record</button></div>`;
+ return pageHead('Vehicle Timeline',`${vehicleFullName(vehicle)} · ${number(vehicle.mileage)} mi`,actions)+garageVehicleDetailHeader(vehicle)+garageVehicleTimeline(vehicle)
+}
+async function loadGarageTimelineOdometerHistory(id,animationStarted=Date.now()){
+ if(!isAdministrator()){garageTimelineObdLoading=false;return}
+ garageTimelineObdLoading=true;
+ try{const data=await authRequest('/api/obd-devices');garageTimelineObdProposals=Array.isArray(data?.odometerProposals)?data.odometerProposals:[]}catch(error){console.warn('GarageLog timeline could not load odometer history.',error)}finally{const remaining=Math.max(0,1600-(Date.now()-animationStarted));window.setTimeout(()=>{garageTimelineObdLoading=false;if(current==='Garage'&&garageTimelineVehicleId===id)render()},remaining)}
+}
+window.openVehicleTimeline=async function(vehicleId){
+ const id=String(vehicleId||'');if(!state.vehicles.some(vehicle=>String(vehicle.id)===id))return;const animationStarted=Date.now();clearTopSearch();current='Garage';garageTimelineVehicleId=id;garageTimelineFilter='all';garageTimelineAnimate=true;garageTimelineObdProposals=[];garageTimelineObdLoading=isAdministrator();render();
+ await loadGarageTimelineOdometerHistory(id,animationStarted)
+}
+window.closeVehicleTimeline=function(){garageTimelineVehicleId=null;garageTimelineFilter='all';garageTimelineAnimate=false;garageTimelineObdLoading=false;render()}
+window.setVehicleTimelineFilter=function(filter){garageTimelineFilter=String(filter||'all');render()}
+
 const STANDARD_MAINTENANCE_TERMS=['oil','tire','air filter','cabin filter','transmission','brake','coolant','antifreeze','spark','belt','differential','battery','wiper'];
 function isCustomMaintenance(item){const name=String(item?.name||'').toLowerCase();return !STANDARD_MAINTENANCE_TERMS.some(term=>name.includes(term))}
 function maintenanceTone(name){return taskVisual(name).tone}
@@ -2428,7 +2543,7 @@ function render(){
  const sidebarImage=document.getElementById('sidebarVehicleImage');sidebarImage.src=vehicleImageUrl();sidebarImage.onerror=()=>{sidebarImage.onerror=null;sidebarImage.src=vehicleDefaultImageUrl()};
  const page=({Dashboard:dashboard,Garage:garage,Maintenance:maintenance,Expenses:expenses,Documents:documents,Reminders:reminders,Reports:reports,Profile:profileSettings,Settings:settingsPage})[current]||dashboard;content.innerHTML=(['Profile','Settings'].includes(current)?'':permissionNotice())+updateAvailableBanner()+page();updateProfileChrome();applySearch();applyPermissionUi();if(current==='Documents')requestAnimationFrame(()=>requestAnimationFrame(syncDocumentsListHeight));if(current==='Expenses')requestAnimationFrame(()=>requestAnimationFrame(syncExpensesListHeight));if(current==='Reminders'&&reminderViewMode==='calendar')requestAnimationFrame(()=>requestAnimationFrame(syncReminderCalendarHeight));if(current==='Profile')requestAnimationFrame(()=>{const form=document.querySelector('.managed-user-form');if(form)syncManagedUserAccessFields(form)});renderNotificationCenter();
 }
-window.goPage=p=>{clearTopSearch();current=p;currentFilter='All';if(p==='Reports')reportViewMode='dashboard';render()}
+window.goPage=p=>{clearTopSearch();current=p;currentFilter='All';if(p==='Garage'){garageTimelineVehicleId=null;garageTimelineFilter='all';garageTimelineAnimate=false}else if(p!=='Garage'){garageTimelineObdLoading=false}if(p==='Reports')reportViewMode='dashboard';render()}
 window.openVehicleRecords=async function(vehicleId,page){closeRecordModal();clearTopSearch();activateVehicle(String(vehicleId),false);current=page;currentFilter='All';if(canWrite())await saveNow();render()}
 window.setFilter=f=>{currentFilter=f;render()}
 window.toggleExpenseView=()=>{expenseViewMode=expenseViewMode==='budget'?'expenses':'budget';currentFilter='All';editingRecurringExpenseId=null;render()}
