@@ -213,11 +213,7 @@ internal static class RecallFeature
             try
             {
                 using var response = await client.GetAsync(sourcePath);
-                response.EnsureSuccessStatusCode();
-                var payload = await response.Content.ReadFromJsonAsync<NhtsaRecallResponse>(new JsonSerializerOptions
-                {
-                    PropertyNameCaseInsensitive = true
-                }) ?? new NhtsaRecallResponse();
+                var payload = await ReadRecallResponseAsync(response);
                 var recalls = payload.Results ?? new List<NhtsaRecallItem>();
                 campaignCount += recalls.Count;
                 var result = await StoreVehicleRecallsAsync(connectionString, vehicle, year, make, model, sourceUrl, recalls);
@@ -956,6 +952,45 @@ internal static class RecallFeature
     {
         if (obj?[name] is not JsonValue value) return null;
         return value.TryGetValue<string>(out var text) ? text?.Trim() : value.ToString().Trim();
+    }
+
+
+    private static async Task<NhtsaRecallResponse> ReadRecallResponseAsync(HttpResponseMessage response)
+    {
+        var body = await response.Content.ReadAsStringAsync();
+        NhtsaRecallResponse? payload = null;
+        if (!string.IsNullOrWhiteSpace(body))
+        {
+            try
+            {
+                payload = JsonSerializer.Deserialize<NhtsaRecallResponse>(body, new JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true
+                });
+            }
+            catch (JsonException) when (response.IsSuccessStatusCode)
+            {
+                throw new InvalidOperationException("NHTSA returned an unreadable recall response.");
+            }
+        }
+
+        if (response.IsSuccessStatusCode) return payload ?? new NhtsaRecallResponse();
+
+        // NHTSA's recallsByVehicle endpoint can respond with HTTP 400 for a valid
+        // vehicle that simply has no recall rows, while its JSON envelope still says
+        // "Results returned successfully" and contains an empty results array.
+        // The vehicle identity has already been validated against NHTSA's catalog, so
+        // this specific response is a legitimate zero-recall result rather than a failure.
+        if ((int)response.StatusCode == 400
+            && payload is not null
+            && payload.Count == 0
+            && (payload.Results?.Count ?? 0) == 0
+            && string.Equals(payload.Message?.Trim(), "Results returned successfully", StringComparison.OrdinalIgnoreCase))
+            return payload;
+
+        var detail = payload?.Message?.Trim();
+        if (string.IsNullOrWhiteSpace(detail)) detail = response.ReasonPhrase ?? "Unknown upstream error";
+        throw new HttpRequestException($"NHTSA recall API returned {(int)response.StatusCode} ({response.StatusCode}): {detail}", null, response.StatusCode);
     }
 
     private static DateTimeOffset? ParseReportDate(string? value)

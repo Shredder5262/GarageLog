@@ -12,6 +12,7 @@ await RunAsync("server notifications persist and dedupe", TestServerNotification
 await RunAsync("server notification settings persist", TestServerNotificationSettingsAsync);
 await RunAsync("recall schedule migrates existing settings", TestRecallScheduleMigrationAsync);
 await RunAsync("NHTSA vehicle match validates alternate make/model", TestRecallVehicleMatchAsync);
+await RunAsync("NHTSA zero-recall HTTP 400 is treated as empty success", TestNhtsaZeroRecall400Async);
 await RunAsync("linked maintenance reminder produces one server alert", TestLinkedReminderDedupeAsync);
 
 if (failures.Count > 0)
@@ -375,6 +376,47 @@ static async Task TestRecallVehicleMatchAsync()
     }
 }
 
+static async Task TestNhtsaZeroRecall400Async()
+{
+    var path = TempDatabasePath();
+    try
+    {
+        var cs = ConnectionString(path);
+        await using (var connection = new SqliteConnection(cs))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                CREATE TABLE AppState (
+                    Id INTEGER PRIMARY KEY CHECK (Id = 1),
+                    Json TEXT NOT NULL,
+                    UpdatedUtc TEXT NOT NULL,
+                    Revision INTEGER NOT NULL DEFAULT 1
+                );
+                INSERT INTO AppState (Id, Json, UpdatedUtc, Revision)
+                VALUES (1, $json, $now, 1);
+                """;
+            command.Parameters.AddWithValue("$json", "{\"vehicles\":[{\"id\":\"bike-1\",\"year\":\"2008\",\"make\":\"Harley Davidson\",\"model\":\"FXSTB\",\"name\":\"2008 Harley Davidson FXSTB\"}]}");
+            command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+            await command.ExecuteNonQueryAsync();
+        }
+        await RecallFeature.InitializeAsync(cs);
+        using var client = new HttpClient(new FakeNhtsaHarleyNoRecallsHandler()) { BaseAddress = new Uri("https://api.nhtsa.gov/") };
+        var match = await RecallFeature.BuildVehicleMatchAsync(cs, "{}", "bike-1", client);
+        Assert(match is not null && match.Suggestions.Any(item => item.Make == "HARLEY-DAVIDSON" && item.Model == "FXSTB"), "GarageLog did not match Harley Davidson FXSTB to NHTSA's canonical identity");
+        await RecallFeature.SaveVehicleMatchAsync(cs, "{}", "bike-1", "2008", "HARLEY-DAVIDSON", "FXSTB", client);
+        var result = await RecallFeature.RefreshDueAsync(cs, "{}", client, NullLogger.Instance, force: true);
+        Assert(result.VehiclesChecked == 1 && result.CampaignsFound == 0 && result.Errors == 0, "NHTSA's HTTP 400 empty-success response was incorrectly treated as an error");
+        var summary = await RecallFeature.ReadSummaryAsync(cs, "{}");
+        var vehicle = summary.Vehicles.Single(item => item.VehicleId == "bike-1");
+        Assert(vehicle.LastSuccessUtc is not null && string.IsNullOrWhiteSpace(vehicle.LastError) && vehicle.RecallCount == 0, "zero-recall NHTSA response did not persist as a successful check");
+    }
+    finally
+    {
+        TryDelete(path);
+    }
+}
+
 static async Task TestLinkedReminderDedupeAsync()
 {
     var path = TempDatabasePath();
@@ -468,6 +510,28 @@ static void TryDelete(string path)
 static void Assert(bool condition, string message)
 {
     if (!condition) throw new InvalidOperationException(message);
+}
+
+
+sealed class FakeNhtsaHarleyNoRecallsHandler : HttpMessageHandler
+{
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        var uri = request.RequestUri?.ToString() ?? string.Empty;
+        if (uri.Contains("/products/vehicle/makes", StringComparison.OrdinalIgnoreCase))
+            return Json(System.Net.HttpStatusCode.OK, "{\"results\":[{\"modelYear\":\"2008\",\"make\":\"HARLEY-DAVIDSON\"}]}");
+        if (uri.Contains("/products/vehicle/models", StringComparison.OrdinalIgnoreCase))
+            return Json(System.Net.HttpStatusCode.OK, "{\"results\":[{\"modelYear\":\"2008\",\"make\":\"HARLEY-DAVIDSON\",\"model\":\"FXSTB\"}]}");
+        if (uri.Contains("/recalls/recallsByVehicle", StringComparison.OrdinalIgnoreCase))
+            return Json(System.Net.HttpStatusCode.BadRequest, "{\"Count\":0,\"Message\":\"Results returned successfully\",\"results\":[]}");
+        return Json(System.Net.HttpStatusCode.NotFound, "{}");
+    }
+
+    private static Task<HttpResponseMessage> Json(System.Net.HttpStatusCode status, string json)
+        => Task.FromResult(new HttpResponseMessage(status)
+        {
+            Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json")
+        });
 }
 
 sealed class FakeNhtsaCatalogHandler : HttpMessageHandler
