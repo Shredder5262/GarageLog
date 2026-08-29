@@ -26,6 +26,11 @@ static class ApiTokenFeature
 
         await using var command = connection.CreateCommand();
         command.CommandText = """
+            CREATE TABLE IF NOT EXISTS SchemaMigrations (
+                Id TEXT PRIMARY KEY,
+                AppliedUtc TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS ApiTokens (
                 Id TEXT PRIMARY KEY,
                 Name TEXT NOT NULL,
@@ -74,6 +79,7 @@ static class ApiTokenFeature
                 EndOdometer REAL NULL,
                 Source TEXT NULL,
                 ReceivedUtc TEXT NOT NULL,
+                TripFingerprint TEXT NULL,
                 UNIQUE(ApiTokenId, ClientTripId),
                 FOREIGN KEY(ApiTokenId) REFERENCES ApiTokens(Id) ON DELETE CASCADE
             );
@@ -136,6 +142,140 @@ static class ApiTokenFeature
         await EnsureColumnAsync(connection, "ObdDevices", "TrustedVehicleId", "TEXT NULL");
         await EnsureColumnAsync(connection, "ObdDevices", "AutoApproveMileage", "INTEGER NOT NULL DEFAULT 0");
         await EnsureColumnAsync(connection, "ObdDevices", "TrustedUtc", "TEXT NULL");
+        await EnsureColumnAsync(connection, "TelemetryTrips", "TripFingerprint", "TEXT NULL");
+
+        await using (var index = connection.CreateCommand())
+        {
+            index.CommandText = """
+                CREATE UNIQUE INDEX IF NOT EXISTS UX_TelemetryTrips_ApiToken_TripFingerprint
+                    ON TelemetryTrips(ApiTokenId, TripFingerprint)
+                    WHERE TripFingerprint IS NOT NULL;
+                """;
+            await index.ExecuteNonQueryAsync();
+        }
+
+        const string telemetryMigrationId = "20260829_03_telemetry_trip_fingerprint_and_odometer_dedupe";
+        var telemetryMigrationApplied = false;
+        await using (var migrationCheck = connection.CreateCommand())
+        {
+            migrationCheck.CommandText = "SELECT 1 FROM SchemaMigrations WHERE Id = $id LIMIT 1;";
+            migrationCheck.Parameters.AddWithValue("$id", telemetryMigrationId);
+            telemetryMigrationApplied = await migrationCheck.ExecuteScalarAsync() is not null;
+        }
+
+        if (!telemetryMigrationApplied)
+        {
+            await BackfillTelemetryTripFingerprintsAsync(connection);
+
+            await using (var maintenance = connection.CreateCommand())
+            {
+                maintenance.CommandText = """
+                    WITH ranked AS (
+                        SELECT TripId,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY COALESCE(VehicleId, ''), COALESCE(DeviceId, ''),
+                                                ROUND(CandidateOdometer, 2), COALESCE(CandidateSource, '')
+                                   ORDER BY UpdatedUtc DESC, TripId DESC
+                               ) AS DuplicateRank
+                        FROM TelemetryTripAssociations
+                        WHERE OdometerStatus = 'pending'
+                          AND CandidateOdometer IS NOT NULL
+                    )
+                    UPDATE TelemetryTripAssociations
+                    SET OdometerStatus = 'superseded', UpdatedUtc = $now
+                    WHERE TripId IN (SELECT TripId FROM ranked WHERE DuplicateRank > 1);
+                    """;
+                maintenance.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+                await maintenance.ExecuteNonQueryAsync();
+            }
+
+            await using var migration = connection.CreateCommand();
+            migration.CommandText = "INSERT INTO SchemaMigrations (Id, AppliedUtc) VALUES ($id, $now);";
+            migration.Parameters.AddWithValue("$id", telemetryMigrationId);
+            migration.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+            await migration.ExecuteNonQueryAsync();
+        }
+    }
+
+    internal static async Task BackfillTelemetryTripFingerprintsAsync(SqliteConnection connection)
+    {
+        var rows = new List<(string TripId, string ApiTokenId, string? DeviceId, DateTimeOffset StartedAt,
+            DateTimeOffset EndedAt, double DistanceMiles, double? StartOdometer, double? EndOdometer,
+            string? ExistingFingerprint)>();
+
+        await using (var read = connection.CreateCommand())
+        {
+            read.CommandText = """
+                SELECT t.Id, t.ApiTokenId, a.DeviceId, t.StartedAt, t.EndedAt, t.DistanceMiles,
+                       t.StartOdometer, t.EndOdometer, t.TripFingerprint
+                FROM TelemetryTrips t
+                LEFT JOIN TelemetryTripAssociations a ON a.TripId = t.Id
+                ORDER BY t.ReceivedUtc, t.Id;
+                """;
+            await using var reader = await read.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                if (!DateTimeOffset.TryParse(reader.GetString(3), out var startedAt)
+                    || !DateTimeOffset.TryParse(reader.GetString(4), out var endedAt))
+                    continue;
+
+                rows.Add((
+                    reader.GetString(0),
+                    reader.GetString(1),
+                    reader.IsDBNull(2) ? null : reader.GetString(2),
+                    startedAt,
+                    endedAt,
+                    reader.GetDouble(5),
+                    reader.IsDBNull(6) ? null : reader.GetDouble(6),
+                    reader.IsDBNull(7) ? null : reader.GetDouble(7),
+                    reader.IsDBNull(8) ? null : reader.GetString(8)));
+            }
+        }
+
+        var canonicalTrips = new Dictionary<string, string>(StringComparer.Ordinal);
+        var now = DateTimeOffset.UtcNow.ToString("O");
+        foreach (var row in rows)
+        {
+            var fingerprint = BuildTelemetryTripFingerprint(
+                row.DeviceId,
+                row.StartedAt,
+                row.EndedAt,
+                row.DistanceMiles,
+                row.StartOdometer,
+                row.EndOdometer);
+            var key = $"{row.ApiTokenId}|{fingerprint}";
+            var isPhysicalDuplicate = canonicalTrips.ContainsKey(key);
+            if (!isPhysicalDuplicate)
+                canonicalTrips[key] = row.TripId;
+
+            // Keep the canonical trip on the physical fingerprint so future retries
+            // resolve to it. Historical duplicates get a unique archival fingerprint.
+            var storedFingerprint = isPhysicalDuplicate
+                ? $"{fingerprint}-duplicate-{row.TripId}"
+                : fingerprint;
+
+            if (!string.Equals(row.ExistingFingerprint, storedFingerprint, StringComparison.Ordinal))
+            {
+                await using var updateTrip = connection.CreateCommand();
+                updateTrip.CommandText = "UPDATE TelemetryTrips SET TripFingerprint = $fingerprint WHERE Id = $tripId;";
+                updateTrip.Parameters.AddWithValue("$fingerprint", storedFingerprint);
+                updateTrip.Parameters.AddWithValue("$tripId", row.TripId);
+                await updateTrip.ExecuteNonQueryAsync();
+            }
+
+            if (isPhysicalDuplicate)
+            {
+                await using var supersede = connection.CreateCommand();
+                supersede.CommandText = """
+                    UPDATE TelemetryTripAssociations
+                    SET OdometerStatus = 'superseded', UpdatedUtc = $now
+                    WHERE TripId = $tripId AND OdometerStatus = 'pending';
+                    """;
+                supersede.Parameters.AddWithValue("$now", now);
+                supersede.Parameters.AddWithValue("$tripId", row.TripId);
+                await supersede.ExecuteNonQueryAsync();
+            }
+        }
     }
 
     private static async Task EnsureColumnAsync(
@@ -518,6 +658,14 @@ static class ApiTokenFeature
                 });
             }
 
+            var tripFingerprint = BuildTelemetryTripFingerprint(
+                request.DeviceId,
+                request.StartedAt.ToUniversalTime(),
+                request.EndedAt.ToUniversalTime(),
+                request.DistanceMiles,
+                request.StartOdometer,
+                request.EndOdometer);
+
             var receipt = await StoreTelemetryTripAsync(
                 connectionString,
                 token.Id,
@@ -527,7 +675,8 @@ static class ApiTokenFeature
                 request.DistanceMiles,
                 request.StartOdometer,
                 request.EndOdometer,
-                request.Source);
+                request.Source,
+                tripFingerprint);
 
             var association = await ResolveVehicleAssociationAsync(
                 connectionString,
@@ -536,13 +685,22 @@ static class ApiTokenFeature
                 request.DeviceName,
                 request.Vin);
 
-            var odometer = await StoreTripAssociationAsync(
-                connectionString,
-                receipt.ReceiptId,
-                association,
-                request.EndedAt.ToUniversalTime(),
-                request.DistanceMiles,
-                request.EndOdometer);
+            var odometer = receipt.Duplicate
+                ? await ReadStoredOdometerProposalAsync(connectionString, receipt.ReceiptId)
+                    ?? await StoreTripAssociationAsync(
+                        connectionString,
+                        receipt.ReceiptId,
+                        association,
+                        request.EndedAt.ToUniversalTime(),
+                        request.DistanceMiles,
+                        request.EndOdometer)
+                : await StoreTripAssociationAsync(
+                    connectionString,
+                    receipt.ReceiptId,
+                    association,
+                    request.EndedAt.ToUniversalTime(),
+                    request.DistanceMiles,
+                    request.EndOdometer);
 
             OdometerApplyResult? automaticApply = null;
             if (!receipt.Duplicate
@@ -745,7 +903,11 @@ static class ApiTokenFeature
                         token.Name,
                         captureType))
                 {
-                    try { File.Delete(fullPath); } catch { }
+                    try { File.Delete(fullPath); }
+                    catch (Exception cleanupException)
+                    {
+                        app.Logger.LogDebug(cleanupException, "Could not remove orphaned mobile receipt file {Path}.", fullPath);
+                    }
                     return Results.Conflict(new { error = "GarageLog could not create the pending receipt document." });
                 }
 
@@ -786,12 +948,17 @@ static class ApiTokenFeature
                     message = "Photo uploaded to GarageLog as a pending document. OCR is processing in the background; review the receipt in GarageLog when it completes."
                 });
             }
-            catch
+            catch (Exception uploadException)
             {
                 if (!await MobileReceiptExistsAsync(connectionString, documentId))
                 {
-                    try { File.Delete(fullPath); } catch { }
+                    try { File.Delete(fullPath); }
+                    catch (Exception cleanupException)
+                    {
+                        app.Logger.LogDebug(cleanupException, "Could not remove failed mobile receipt file {Path}.", fullPath);
+                    }
                 }
+                app.Logger.LogWarning(uploadException, "Mobile receipt upload failed for document {DocumentId}.", documentId);
                 throw;
             }
         }).AllowAnonymous();
@@ -931,7 +1098,8 @@ static class ApiTokenFeature
         double distanceMiles,
         double? startOdometer,
         double? endOdometer,
-        string? source)
+        string? source,
+        string tripFingerprint)
     {
         var receiptId = Guid.NewGuid().ToString("N");
         var receivedUtc = DateTimeOffset.UtcNow;
@@ -944,10 +1112,10 @@ static class ApiTokenFeature
             insert.CommandText = """
                 INSERT OR IGNORE INTO TelemetryTrips
                     (Id, ApiTokenId, ClientTripId, StartedAt, EndedAt, DistanceMiles,
-                     StartOdometer, EndOdometer, Source, ReceivedUtc)
+                     StartOdometer, EndOdometer, Source, ReceivedUtc, TripFingerprint)
                 VALUES
                     ($id, $tokenId, $clientTripId, $startedAt, $endedAt, $distanceMiles,
-                     $startOdometer, $endOdometer, $source, $receivedUtc);
+                     $startOdometer, $endOdometer, $source, $receivedUtc, $tripFingerprint);
                 """;
 
             insert.Parameters.AddWithValue("$id", receiptId);
@@ -966,6 +1134,7 @@ static class ApiTokenFeature
                 "$source",
                 string.IsNullOrWhiteSpace(source) ? DBNull.Value : source.Trim());
             insert.Parameters.AddWithValue("$receivedUtc", receivedUtc.ToString("O"));
+            insert.Parameters.AddWithValue("$tripFingerprint", tripFingerprint);
 
             var inserted = await insert.ExecuteNonQueryAsync();
 
@@ -978,12 +1147,14 @@ static class ApiTokenFeature
             SELECT Id, ReceivedUtc
             FROM TelemetryTrips
             WHERE ApiTokenId = $tokenId
-              AND ClientTripId = $clientTripId
+              AND (ClientTripId = $clientTripId OR TripFingerprint = $tripFingerprint)
+            ORDER BY CASE WHEN ClientTripId = $clientTripId THEN 0 ELSE 1 END
             LIMIT 1;
             """;
 
         existing.Parameters.AddWithValue("$tokenId", apiTokenId);
         existing.Parameters.AddWithValue("$clientTripId", clientTripId);
+        existing.Parameters.AddWithValue("$tripFingerprint", tripFingerprint);
 
         await using var reader = await existing.ExecuteReaderAsync();
 
@@ -997,6 +1168,32 @@ static class ApiTokenFeature
 
         throw new InvalidOperationException(
             "GarageLog could not confirm the telemetry trip after storage.");
+    }
+
+    internal static string BuildTelemetryTripFingerprint(
+        string? deviceId,
+        DateTimeOffset startedAt,
+        DateTimeOffset endedAt,
+        double distanceMiles,
+        double? startOdometer,
+        double? endOdometer)
+    {
+        static string Number(double? value) => value.HasValue
+            ? value.Value.ToString("0.000", CultureInfo.InvariantCulture)
+            : string.Empty;
+
+        // Client retry metadata can vary slightly (source label/casing and
+        // sub-second serialization). Fingerprint the physical trip instead.
+        var normalizedDevice = (NormalizeDeviceId(deviceId) ?? (deviceId ?? string.Empty).Trim())
+            .ToUpperInvariant();
+        var canonical = string.Join("|",
+            normalizedDevice,
+            startedAt.ToUniversalTime().ToUnixTimeSeconds(),
+            endedAt.ToUniversalTime().ToUnixTimeSeconds(),
+            distanceMiles.ToString("0.000", CultureInfo.InvariantCulture),
+            Number(startOdometer),
+            Number(endOdometer));
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
     }
 
     private static string? NormalizeDeviceId(string? value)
@@ -1329,6 +1526,31 @@ static class ApiTokenFeature
             deviceId, null, null, null, "needs-vehicle-selection", null, null, null);
     }
 
+    private static async Task<OdometerProposalResult?> ReadStoredOdometerProposalAsync(
+        string connectionString,
+        string tripId)
+    {
+        await using var connection = new SqliteConnection(connectionString);
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT OdometerStatus, BaselineMileage, CandidateOdometer, CandidateSource
+            FROM TelemetryTripAssociations
+            WHERE TripId = $tripId
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("$tripId", tripId);
+        await using var reader = await command.ExecuteReaderAsync();
+        if (!await reader.ReadAsync())
+            return null;
+
+        return new OdometerProposalResult(
+            reader.GetString(0),
+            reader.IsDBNull(1) ? null : reader.GetDouble(1),
+            reader.IsDBNull(2) ? null : reader.GetDouble(2),
+            reader.IsDBNull(3) ? null : reader.GetString(3));
+    }
+
     private static async Task<double?> ReadHighestPendingCandidateAsync(
         string connectionString,
         string vehicleId,
@@ -1418,7 +1640,7 @@ static class ApiTokenFeature
                 CandidateSource = excluded.CandidateSource,
                 OdometerStatus = excluded.OdometerStatus,
                 UpdatedUtc = excluded.UpdatedUtc
-            WHERE TelemetryTripAssociations.OdometerStatus NOT IN ('applied', 'dismissed');
+            WHERE TelemetryTripAssociations.OdometerStatus NOT IN ('applied', 'dismissed', 'superseded');
             """;
         command.Parameters.AddWithValue("$tripId", tripId);
         command.Parameters.AddWithValue("$deviceId", (object?)association.DeviceId ?? DBNull.Value);
@@ -1433,6 +1655,31 @@ static class ApiTokenFeature
         command.Parameters.AddWithValue("$odometerStatus", odometerStatus);
         command.Parameters.AddWithValue("$now", now.ToString("O"));
         await command.ExecuteNonQueryAsync();
+
+        if (string.Equals(odometerStatus, "pending", StringComparison.Ordinal)
+            && candidate.HasValue
+            && !string.IsNullOrWhiteSpace(association.VehicleId))
+        {
+            await using var supersede = connection.CreateCommand();
+            supersede.CommandText = """
+                UPDATE TelemetryTripAssociations
+                SET OdometerStatus = 'superseded', UpdatedUtc = $now
+                WHERE TripId <> $tripId
+                  AND VehicleId = $vehicleId
+                  AND ((DeviceId = $deviceId) OR (DeviceId IS NULL AND $deviceId IS NULL))
+                  AND OdometerStatus = 'pending'
+                  AND CandidateOdometer IS NOT NULL
+                  AND ABS(CandidateOdometer - $candidate) <= 0.01
+                  AND COALESCE(CandidateSource, '') = COALESCE($candidateSource, '');
+                """;
+            supersede.Parameters.AddWithValue("$now", now.ToString("O"));
+            supersede.Parameters.AddWithValue("$tripId", tripId);
+            supersede.Parameters.AddWithValue("$vehicleId", association.VehicleId);
+            supersede.Parameters.AddWithValue("$deviceId", (object?)association.DeviceId ?? DBNull.Value);
+            supersede.Parameters.AddWithValue("$candidate", candidate.Value);
+            supersede.Parameters.AddWithValue("$candidateSource", (object?)candidateSource ?? DBNull.Value);
+            await supersede.ExecuteNonQueryAsync();
+        }
 
         return new OdometerProposalResult(odometerStatus, baselineMileage, candidate, candidateSource);
     }
@@ -1530,6 +1777,43 @@ static class ApiTokenFeature
         return result;
     }
 
+    private static async Task<(string Json, long Revision)> ReadAppStateSnapshotAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction)
+    {
+        await using var stateCommand = connection.CreateCommand();
+        stateCommand.Transaction = transaction;
+        stateCommand.CommandText = "SELECT Json, Revision FROM AppState WHERE Id = 1;";
+        await using var reader = await stateCommand.ExecuteReaderAsync();
+        if (!await reader.ReadAsync())
+            return ("{}", 1);
+        return (reader.GetString(0), reader.GetInt64(1));
+    }
+
+    private static async Task<bool> TryWriteAppStateSnapshotAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        JsonObject root,
+        long expectedRevision,
+        DateTimeOffset updatedUtc)
+    {
+        await using var updateState = connection.CreateCommand();
+        updateState.Transaction = transaction;
+        updateState.CommandText = """
+            UPDATE AppState
+            SET Json = $json, UpdatedUtc = $updatedUtc, Revision = Revision + 1
+            WHERE Id = 1 AND Revision = $expectedRevision;
+            """;
+        updateState.Parameters.AddWithValue("$json", root.ToJsonString(new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            WriteIndented = true
+        }));
+        updateState.Parameters.AddWithValue("$updatedUtc", updatedUtc.ToString("O"));
+        updateState.Parameters.AddWithValue("$expectedRevision", expectedRevision);
+        return await updateState.ExecuteNonQueryAsync() > 0;
+    }
+
     private static async Task<OdometerApplyResult> ApplyOdometerProposalAsync(
         string connectionString,
         string tripId)
@@ -1552,7 +1836,7 @@ static class ApiTokenFeature
                 JOIN TelemetryTrips t ON t.Id = a.TripId
                 WHERE a.TripId = $tripId
                   AND a.CandidateOdometer IS NOT NULL
-                  AND a.OdometerStatus NOT IN ('applied', 'dismissed')
+                  AND a.OdometerStatus NOT IN ('applied', 'dismissed', 'superseded')
                 LIMIT 1;
                 """;
             proposal.Parameters.AddWithValue("$tripId", tripId);
@@ -1568,15 +1852,8 @@ static class ApiTokenFeature
         if (string.IsNullOrWhiteSpace(vehicleId) || !candidate.HasValue)
             return new OdometerApplyResult(false, false, vehicleId, null, candidate, "The trip is not associated with a GarageLog vehicle.");
 
-        string stateJson;
-        await using (var stateCommand = connection.CreateCommand())
-        {
-            stateCommand.Transaction = (SqliteTransaction)transaction;
-            stateCommand.CommandText = "SELECT Json FROM AppState WHERE Id = 1;";
-            stateJson = await stateCommand.ExecuteScalarAsync() as string ?? "{}";
-        }
-
-        var root = JsonNode.Parse(stateJson) as JsonObject ?? new JsonObject();
+        var stateSnapshot = await ReadAppStateSnapshotAsync(connection, (SqliteTransaction)transaction);
+        var root = JsonNode.Parse(stateSnapshot.Json) as JsonObject ?? new JsonObject();
         var vehicles = root["vehicles"] as JsonArray ?? new JsonArray();
         var vehicle = vehicles.OfType<JsonObject>().FirstOrDefault(item => JsonString(item["id"]) == vehicleId);
         if (vehicle is null)
@@ -1627,21 +1904,13 @@ static class ApiTokenFeature
             root["vehicle"] = vehicle.DeepClone();
         }
 
-        await using (var updateState = connection.CreateCommand())
+        if (!await TryWriteAppStateSnapshotAsync(
+                connection, (SqliteTransaction)transaction, root, stateSnapshot.Revision, now))
         {
-            updateState.Transaction = (SqliteTransaction)transaction;
-            updateState.CommandText = """
-                UPDATE AppState
-                SET Json = $json, UpdatedUtc = $updatedUtc
-                WHERE Id = 1;
-                """;
-            updateState.Parameters.AddWithValue("$json", root.ToJsonString(new JsonSerializerOptions
-            {
-                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-                WriteIndented = true
-            }));
-            updateState.Parameters.AddWithValue("$updatedUtc", now.ToString("O"));
-            await updateState.ExecuteNonQueryAsync();
+            await transaction.RollbackAsync();
+            return new OdometerApplyResult(
+                true, false, vehicleId, currentMileage, candidate,
+                "GarageLog changed while this odometer proposal was being applied. Refresh and try again.");
         }
 
         await using (var applied = connection.CreateCommand())
@@ -1651,9 +1920,19 @@ static class ApiTokenFeature
                 UPDATE TelemetryTripAssociations
                 SET OdometerStatus = 'applied', AppliedUtc = $now, UpdatedUtc = $now
                 WHERE TripId = $tripId;
+
+                UPDATE TelemetryTripAssociations
+                SET OdometerStatus = 'covered', UpdatedUtc = $now
+                WHERE TripId <> $tripId
+                  AND VehicleId = $vehicleId
+                  AND OdometerStatus = 'pending'
+                  AND CandidateOdometer IS NOT NULL
+                  AND CandidateOdometer <= $candidate + 0.01;
                 """;
             applied.Parameters.AddWithValue("$now", now.ToString("O"));
             applied.Parameters.AddWithValue("$tripId", tripId);
+            applied.Parameters.AddWithValue("$vehicleId", vehicleId);
+            applied.Parameters.AddWithValue("$candidate", candidate.Value);
             await applied.ExecuteNonQueryAsync();
         }
 
@@ -1674,7 +1953,7 @@ static class ApiTokenFeature
             UPDATE TelemetryTripAssociations
             SET OdometerStatus = 'dismissed', DismissedUtc = $now, UpdatedUtc = $now
             WHERE TripId = $tripId
-              AND OdometerStatus NOT IN ('applied', 'dismissed');
+              AND OdometerStatus NOT IN ('applied', 'dismissed', 'superseded');
             """;
         command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
         command.Parameters.AddWithValue("$tripId", tripId);
@@ -1693,15 +1972,8 @@ static class ApiTokenFeature
         await connection.OpenAsync();
         await using var transaction = await connection.BeginTransactionAsync();
 
-        string stateJson;
-        await using (var stateCommand = connection.CreateCommand())
-        {
-            stateCommand.Transaction = (SqliteTransaction)transaction;
-            stateCommand.CommandText = "SELECT Json FROM AppState WHERE Id = 1;";
-            stateJson = await stateCommand.ExecuteScalarAsync() as string ?? "{}";
-        }
-
-        var root = JsonNode.Parse(stateJson) as JsonObject ?? new JsonObject();
+        var stateSnapshot = await ReadAppStateSnapshotAsync(connection, (SqliteTransaction)transaction);
+        var root = JsonNode.Parse(stateSnapshot.Json) as JsonObject ?? new JsonObject();
         var vehicles = root["vehicles"] as JsonArray ?? new JsonArray();
         var vehicle = vehicles.OfType<JsonObject>()
             .FirstOrDefault(item => string.Equals(JsonString(item["id"]), vehicleId, StringComparison.Ordinal));
@@ -1768,21 +2040,14 @@ static class ApiTokenFeature
             root["vehicle"] = vehicle.DeepClone();
         }
 
-        await using (var updateState = connection.CreateCommand())
+        var stateUpdatedUtc = DateTimeOffset.UtcNow;
+        if (!await TryWriteAppStateSnapshotAsync(
+                connection, (SqliteTransaction)transaction, root, stateSnapshot.Revision, stateUpdatedUtc))
         {
-            updateState.Transaction = (SqliteTransaction)transaction;
-            updateState.CommandText = """
-                UPDATE AppState
-                SET Json = $json, UpdatedUtc = $updatedUtc
-                WHERE Id = 1;
-                """;
-            updateState.Parameters.AddWithValue("$json", root.ToJsonString(new JsonSerializerOptions
-            {
-                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-                WriteIndented = true
-            }));
-            updateState.Parameters.AddWithValue("$updatedUtc", DateTimeOffset.UtcNow.ToString("O"));
-            await updateState.ExecuteNonQueryAsync();
+            await transaction.RollbackAsync();
+            return new MobileMileageApplyResult(
+                true, false, false, vehicleId, vehicleName, currentMileage, currentMileage,
+                "GarageLog changed while this mileage update was being saved. Refresh and try again.");
         }
 
         await transaction.CommitAsync();
@@ -1817,15 +2082,8 @@ static class ApiTokenFeature
         await connection.OpenAsync();
         await using var transaction = await connection.BeginTransactionAsync();
 
-        string stateJson;
-        await using (var stateCommand = connection.CreateCommand())
-        {
-            stateCommand.Transaction = (SqliteTransaction)transaction;
-            stateCommand.CommandText = "SELECT Json FROM AppState WHERE Id = 1;";
-            stateJson = await stateCommand.ExecuteScalarAsync() as string ?? "{}";
-        }
-
-        var root = JsonNode.Parse(stateJson) as JsonObject ?? new JsonObject();
+        var stateSnapshot = await ReadAppStateSnapshotAsync(connection, (SqliteTransaction)transaction);
+        var root = JsonNode.Parse(stateSnapshot.Json) as JsonObject ?? new JsonObject();
         var vehicles = root["vehicles"] as JsonArray ?? new JsonArray();
         var vehicleExists = vehicles.OfType<JsonObject>().Any(item =>
             string.Equals(JsonString(item["id"]), vehicleId, StringComparison.Ordinal));
@@ -1887,23 +2145,16 @@ static class ApiTokenFeature
         };
         documents.Insert(0, document);
 
-        await using var update = connection.CreateCommand();
-        update.Transaction = (SqliteTransaction)transaction;
-        update.CommandText = """
-            UPDATE AppState
-            SET Json = $json, UpdatedUtc = $updatedUtc
-            WHERE Id = 1;
-            """;
-        update.Parameters.AddWithValue("$json", root.ToJsonString(new JsonSerializerOptions
+        var changed = await TryWriteAppStateSnapshotAsync(
+            connection, (SqliteTransaction)transaction, root, stateSnapshot.Revision, now);
+        if (!changed)
         {
-            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-            WriteIndented = true
-        }));
-        update.Parameters.AddWithValue("$updatedUtc", now.ToString("O"));
-        var changed = await update.ExecuteNonQueryAsync() > 0;
+            await transaction.RollbackAsync();
+            return false;
+        }
 
         await transaction.CommitAsync();
-        return changed;
+        return true;
     }
 
     private static async Task ProcessMobileReceiptOcrAsync(
@@ -2042,15 +2293,8 @@ static class ApiTokenFeature
         await connection.OpenAsync();
         await using var transaction = await connection.BeginTransactionAsync();
 
-        string stateJson;
-        await using (var stateCommand = connection.CreateCommand())
-        {
-            stateCommand.Transaction = (SqliteTransaction)transaction;
-            stateCommand.CommandText = "SELECT Json FROM AppState WHERE Id = 1;";
-            stateJson = await stateCommand.ExecuteScalarAsync() as string ?? "{}";
-        }
-
-        var root = JsonNode.Parse(stateJson) as JsonObject ?? new JsonObject();
+        var stateSnapshot = await ReadAppStateSnapshotAsync(connection, (SqliteTransaction)transaction);
+        var root = JsonNode.Parse(stateSnapshot.Json) as JsonObject ?? new JsonObject();
         var documents = root["documents"] as JsonArray ?? new JsonArray();
         var document = documents.OfType<JsonObject>().FirstOrDefault(item =>
             string.Equals(JsonString(item["id"]), documentId, StringComparison.Ordinal));
@@ -2088,20 +2332,12 @@ static class ApiTokenFeature
             ["updatedUtc"] = now.ToString("O")
         };
 
-        await using var update = connection.CreateCommand();
-        update.Transaction = (SqliteTransaction)transaction;
-        update.CommandText = """
-            UPDATE AppState
-            SET Json = $json, UpdatedUtc = $updatedUtc
-            WHERE Id = 1;
-            """;
-        update.Parameters.AddWithValue("$json", root.ToJsonString(new JsonSerializerOptions
+        if (!await TryWriteAppStateSnapshotAsync(
+                connection, (SqliteTransaction)transaction, root, stateSnapshot.Revision, now))
         {
-            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-            WriteIndented = true
-        }));
-        update.Parameters.AddWithValue("$updatedUtc", now.ToString("O"));
-        await update.ExecuteNonQueryAsync();
+            await transaction.RollbackAsync();
+            return;
+        }
         await transaction.CommitAsync();
     }
 

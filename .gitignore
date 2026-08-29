@@ -1,4 +1,48 @@
-# GarageLog local data
+# .NET build output
+**/[Bb]in/
+**/[Oo]bj/
+**/.vs/
+**/TestResults/
+**/*.user
+**/*.suo
+
+# GarageLog local/runtime data
+**/data/
+**/*.db
+**/*.db-shm
+**/*.db-wal
+**/data-protection-keys/
+**/documents/
+**/document-previews/
+**/profile-images/
+**/vehicles/
+
+# Editor / OS noise
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local archives and logs
+*.zip
+*.log
+
+# Python tool cache
+**/__pycache__/
+**/*.pyc
+
+# Local environment/config
+.env
+.env.*
+!.env.example
+
+# Additional database/runtime protection
+*.db-*
+*.sqlite
+*.sqlite3
+logs/
+
+# GarageLog runtime data
 /data/
 **/data/
 *.db
@@ -7,25 +51,4 @@
 *.sqlite3
 *.log
 logs/
-
-# User files and local configuration
-.env
-.env.*
-!.env.example
-*.zip
-*.7z
-*.tar
-*.tar.gz
-
-# .NET and IDE
-**/bin/
-**/obj/
-.vs/
-.vscode/
-.idea/
-*.user
-*.suo
-
-# OS files
-.DS_Store
-Thumbs.db
+**/data-protection-keys/

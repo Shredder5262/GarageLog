@@ -173,7 +173,7 @@ function settingsDeviceRows(){
 }
 
 function settingsOdometerRows(){
-  const actionable=settingsOdometerProposals.filter(item=>!['applied','dismissed'].includes(item.storedStatus));
+  const actionable=settingsOdometerProposals.filter(item=>!['applied','dismissed','superseded','unavailable','waiting-for-vehicle'].includes(item.storedStatus));
   if(!actionable.length){
     return `<div class="settings-empty"><strong>No odometer updates waiting</strong><p>OBD mileage readings that still need review will appear here.</p></div>`;
   }
@@ -225,7 +225,7 @@ window.setSettingsObdAutoApprove=async function(deviceId,enabled){
 };
 
 window.applySettingsOdometer=async function(tripId){
-  try{const result=await authRequest(`/api/odometer-proposals/${encodeURIComponent(tripId)}/apply`,{method:'POST'});await refreshSettingsData();render();toast(result.message||'Odometer proposal processed')}catch(error){toast(error.message||'Unable to apply odometer proposal')}
+  try{const result=await authRequest(`/api/odometer-proposals/${encodeURIComponent(tripId)}/apply`,{method:'POST'});await loadState({persistNormalization:false});await refreshSettingsData();render();toast(result.message||'Odometer proposal processed')}catch(error){toast(error.message||'Unable to apply odometer proposal')}
 };
 window.dismissSettingsOdometer=async function(tripId){
   try{await authRequest(`/api/odometer-proposals/${encodeURIComponent(tripId)}/dismiss`,{method:'POST'});await refreshSettingsData();render();toast('Odometer proposal dismissed')}catch(error){toast(error.message||'Unable to dismiss odometer proposal')}

@@ -1,4 +1,6 @@
 let state=null;
+let stateRevision=0;
+let stateSaveConflict=false;
 let saveTimer=null;
 let current='Dashboard';
 let currentFilter='All';
@@ -222,13 +224,14 @@ function maintenanceIcon(name){return taskVisual(name).icon}
 function statusClass(status){return status==='Overdue'?'bad':status==='Due soon'||status==='Due Soon'?'warn':''}
 function statusBadge(status){const c=status==='Overdue'?'red':status.toLowerCase().includes('soon')?'orange':status==='Completed'?'green':'blue';return `<span class="badge ${c}">${esc(status)}</span>`}
 
-async function loadState(){
+async function loadState({persistNormalization=true}={}){
  const r=await fetch('/api/state',{cache:'no-store'});if(!r.ok)throw new Error(`Unable to load GarageLog data (${r.status})`);
- state=await r.json();const migrated=normalizeState();
- // Startup migrations should never turn a successful sign-in into a login error.
- // If persistence of a compatibility normalization fails, keep the loaded state
- // usable and let the next explicit save retry it.
- if(migrated&&canWrite()){try{await saveNow()}catch(error){console.warn('GarageLog startup normalization could not be persisted.',error)}}
+ const revision=Number(r.headers.get('X-GarageLog-State-Revision')||0);
+ state=await r.json();stateRevision=Number.isFinite(revision)&&revision>0?revision:0;stateSaveConflict=false;const migrated=normalizeState();
+ // Startup compatibility normalization is persisted only from a current state
+ // revision. This prevents a background/mobile update from being overwritten by
+ // an older browser snapshot.
+ if(migrated&&canWrite()&&persistNormalization){try{await saveNow()}catch(error){console.warn('GarageLog startup normalization could not be persisted.',error)}}
 }
 function makeVehicleId(){return globalThis.crypto?.randomUUID?.()||`vehicle-${Date.now()}-${Math.random().toString(16).slice(2)}`}
 function makeRecordId(prefix='record'){return globalThis.crypto?.randomUUID?.()||`${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`}
@@ -512,7 +515,7 @@ function mixHexColors(colorA,colorB,weight=.5){const a=normalizePanelColor(color
 function applyHighlightColor(value){const color=normalizePanelColor(value,'#2563eb'),root=document.documentElement,palette=panelColorPalette(color);root.style.setProperty('--blue',color);root.style.setProperty('--blue-600',mixHexColors(color,'#000000',.18));root.style.setProperty('--blue-soft',mixHexColors(color,'#ffffff',.92));root.style.setProperty('--blue-line',mixHexColors(color,'#ffffff',.68));root.style.setProperty('--highlight-on',palette.heading)}
 function applyAppearanceSettings(){const settings=appearanceSettings(),sidebar=normalizePanelColor(settings.sidebarColor),topbar=normalizePanelColor(settings.topbarColor),highlight=normalizePanelColor(settings.highlightColor,'#2563eb'),sidePalette=panelColorPalette(sidebar),topPalette=panelColorPalette(topbar),root=document.documentElement;root.style.setProperty('--sidebar-bg',sidebar);root.style.setProperty('--sidebar-fg',sidePalette.foreground);root.style.setProperty('--sidebar-heading',sidePalette.heading);root.style.setProperty('--sidebar-muted',sidePalette.muted);root.style.setProperty('--sidebar-hover',sidePalette.hover);root.style.setProperty('--topbar-bg',topbar);root.style.setProperty('--topbar-fg',topPalette.heading);root.style.setProperty('--topbar-muted',topPalette.muted);root.style.setProperty('--topbar-hover',topPalette.hover);applyHighlightColor(highlight)}
 window.previewGarageChromeColor=function(target,value){if(!state)return;const color=normalizePanelColor(value,target==='highlight'?'#2563eb':'#ffffff'),palette=panelColorPalette(color),root=document.documentElement;if(target==='highlight'){applyHighlightColor(color)}else if(target==='topbar'){root.style.setProperty('--topbar-bg',color);root.style.setProperty('--topbar-fg',palette.heading);root.style.setProperty('--topbar-muted',palette.muted);root.style.setProperty('--topbar-hover',palette.hover)}else{root.style.setProperty('--sidebar-bg',color);root.style.setProperty('--sidebar-fg',palette.foreground);root.style.setProperty('--sidebar-heading',palette.heading);root.style.setProperty('--sidebar-muted',palette.muted);root.style.setProperty('--sidebar-hover',palette.hover)}const output=document.querySelector(`[data-color-value="${target}"]`);if(output)output.textContent=color.toUpperCase()}
-async function saveAppearanceSettingsNow(){return authRequest('/api/settings/appearance',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(appearanceSettings())})}
+async function saveAppearanceSettingsNow(){const result=await authRequest('/api/settings/appearance',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(appearanceSettings())});const revision=Number(result?.revision||0);if(Number.isFinite(revision)&&revision>0)stateRevision=revision;return result}
 window.saveGarageChromeColor=async function(target,value){if(!isAdministrator()){toast('Administrator access is required to change server appearance');render();return}const key=target==='topbar'?'topbarColor':target==='highlight'?'highlightColor':'sidebarColor',color=normalizePanelColor(value,target==='highlight'?'#2563eb':'#ffffff');state.appearanceSettings={...appearanceSettings(),[key]:color};applyAppearanceSettings();const label=target==='topbar'?'Top banner':target==='highlight'?'Highlight':'Left pane';try{await saveAppearanceSettingsNow();toast(`${label} color saved`)}catch(error){toast(error.message||'Unable to save appearance setting')}}
 window.resetGarageChromeColors=async function(){if(!isAdministrator()){toast('Administrator access is required to change server appearance');return}state.appearanceSettings={...garageAppearanceDefaults};applyAppearanceSettings();['sidebar','topbar','highlight'].forEach(target=>{const key=target==='sidebar'?'sidebarColor':target==='topbar'?'topbarColor':'highlightColor',value=garageAppearanceDefaults[key],input=document.querySelector(`input[type=\"color\"][oninput*=\"'${target}'\"]`),output=document.querySelector(`[data-color-value=\"${target}\"]`);if(input)input.value=value;if(output)output.textContent=value.toUpperCase()});try{await saveAppearanceSettingsNow();toast('Server appearance reset');render()}catch(error){toast(error.message||'Unable to reset appearance')}}
 
@@ -1052,7 +1055,8 @@ window.openDocumentShare=openDocumentShare;
 async function openDocumentShareManager(){
  const dialog=ensureDynamicDialog('documentShareManagerDialog','document-share-manager-dialog');
  let shares=[];
- const load=async()=>{shares=await listDocumentShares()};
+ const load=async()=>{shares=await listDocumentShares();if(typeof settingsShares!=='undefined')settingsShares=shares.slice()};
+ const closeManager=()=>{dialog.close();if(current==='Settings')render()};
  try{await load()}catch(error){toast(error.message||'Unable to load share links');return}
 
  const documentFor=share=>state.documents.find(doc=>doc.storedName===share.storedName)||null;
@@ -1089,8 +1093,8 @@ async function openDocumentShareManager(){
 
   dialog.innerHTML=`<div class="modal-header"><div><span class="wizard-eyebrow">SHARING SECURITY</span><h3>Active Share Links</h3><p>Review active and historical document links, expiration, access history, and revocation status.</p></div><button type="button" class="icon-btn share-manager-close">${svg('close')}</button></div><div class="share-manager-body"><div class="share-manager-summary"><div><strong>${active.length}</strong><span>Active</span></div><div><strong>${shares.filter(share=>share.status==='Expired').length}</strong><span>Expired</span></div><div><strong>${shares.filter(share=>share.status==='Revoked').length}</strong><span>Revoked</span></div><button type="button" class="danger-outline revoke-all-shares" ${active.length?'':'disabled'}>${svg('trash')} Revoke All Active</button></div><div class="share-manager-list">${listHtml}</div><div class="share-manager-security-note">${svg('shield')}<span>Rotating or deleting an active entry immediately invalidates its URL. Permanent deletion removes that share-link history record from GarageLog.</span></div></div><div class="modal-actions"><button type="button" class="primary share-manager-done">Done</button></div>`;
 
-  dialog.querySelector('.share-manager-close').onclick=()=>dialog.close();
-  dialog.querySelector('.share-manager-done').onclick=()=>dialog.close();
+  dialog.querySelector('.share-manager-close').onclick=closeManager;
+  dialog.querySelector('.share-manager-done').onclick=closeManager;
 
   dialog.querySelectorAll('[data-share-expiry]').forEach(select=>{
    const custom=dialog.querySelector(`[data-share-custom="${CSS.escape(select.dataset.shareExpiry)}"]`);
@@ -1324,8 +1328,19 @@ function handleTopSearchInput(event){
  if(TOP_SEARCH_FILTER_PAGES.has(current))render();else renderGlobalSearchResults(topSearchQuery)
 }
 
-async function saveNow(){if(!canWrite())throw new Error('This account has read-only access.');persistActiveVehicle();const vehicle=activeVehicle();let mileage=Number(state?.mileage);if(!Number.isFinite(mileage)||mileage<0)mileage=Number(vehicle?.mileage);if(!Number.isFinite(mileage)||mileage<0)mileage=0;state.mileage=Math.round(mileage);if(vehicle)vehicle.mileage=state.mileage;const r=await fetch('/api/state',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(state)});if(r.status===401){authSession={configured:true,authenticated:false};renderAuthScreen('login','Your session expired. Sign in again.');throw new Error('Session expired')}if(!r.ok){const d=await r.json().catch(()=>({}));throw new Error(d.error||`Unable to save (${r.status})`)}}
-function save(message='Saved locally'){clearTimeout(saveTimer);saveTimer=setTimeout(()=>saveNow().then(()=>toast(message)).catch(e=>{console.error(e);toast('Save failed')}),120)}
+async function saveNow(){
+ if(!canWrite())throw new Error('This account has read-only access.');
+ if(stateSaveConflict)throw new Error('GarageLog data changed elsewhere. Reload GarageLog before making another change.');
+ if(!Number.isFinite(stateRevision)||stateRevision<1)throw new Error('GarageLog state revision is unavailable. Reload GarageLog and try again.');
+ persistActiveVehicle();const vehicle=activeVehicle();let mileage=Number(state?.mileage);if(!Number.isFinite(mileage)||mileage<0)mileage=Number(vehicle?.mileage);if(!Number.isFinite(mileage)||mileage<0)mileage=0;state.mileage=Math.round(mileage);if(vehicle)vehicle.mileage=state.mileage;
+ const r=await fetch('/api/state',{method:'PUT',headers:{'Content-Type':'application/json','X-GarageLog-State-Revision':String(stateRevision)},body:JSON.stringify(state)});
+ if(r.status===401){authSession={configured:true,authenticated:false};renderAuthScreen('login','Your session expired. Sign in again.');throw new Error('Session expired')}
+ const responseRevision=Number(r.headers.get('X-GarageLog-State-Revision')||0);
+ if(r.status===409){const d=await r.json().catch(()=>({}));stateSaveConflict=true;setTimeout(()=>window.location.reload(),900);throw new Error(d.error||'GarageLog data changed elsewhere. Reloading the latest data…')}
+ if(!r.ok){const d=await r.json().catch(()=>({}));throw new Error(d.error||`Unable to save (${r.status})`)}
+ const d=await r.json().catch(()=>({}));const savedRevision=Number(d.revision||responseRevision||0);if(Number.isFinite(savedRevision)&&savedRevision>0)stateRevision=savedRevision;
+}
+function save(message='Saved locally'){clearTimeout(saveTimer);saveTimer=setTimeout(()=>saveNow().then(()=>toast(message)).catch(e=>{console.error(e);toast(e?.message||'Save failed')}),120)}
 
 function renderNav(){nav.innerHTML=navItems.map(x=>`<button class="nav-btn ${x===current?'active':''}" data-page="${x}">${navIcon(x)}<span>${x}</span></button>`).join('');nav.querySelectorAll('[data-page]').forEach(b=>b.onclick=()=>{clearTopSearch();current=b.dataset.page;currentFilter='All';render()})}
 function pageHead(title,desc,action=''){return `<div class="page-head"><div><h1>${title}</h1><p>${desc}</p></div>${action}</div>`}

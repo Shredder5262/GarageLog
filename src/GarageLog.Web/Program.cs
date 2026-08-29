@@ -168,12 +168,18 @@ var connectionString = new SqliteConnectionStringBuilder
 {
     DataSource = databasePath,
     Mode = SqliteOpenMode.ReadWriteCreate,
-    Cache = SqliteCacheMode.Shared
+    Cache = SqliteCacheMode.Shared,
+    ForeignKeys = true,
+    DefaultTimeout = 10
 }.ToString();
 
+var documentShareTablePredatedThisStartup = File.Exists(databasePath)
+    && await DatabaseMaintenance.TableExistsAsync(connectionString, "DocumentShareLinks");
+await DatabaseMaintenance.BackupBeforeMigrationAsync(connectionString, databasePath, app.Logger);
 await InitializeDatabaseAsync(connectionString);
+await DatabaseMaintenance.ConfigureDatabaseAsync(connectionString, app.Logger);
 await ApiTokenFeature.InitializeAsync(connectionString);
-await MigrateLegacyDocumentSharesAsync(connectionString);
+await LegacyDocumentShareMigration.ApplyAsync(connectionString, importLegacyRows: !documentShareTablePredatedThisStartup);
 var passwordHasher = app.Services.GetRequiredService<IPasswordHasher<GarageLogUser>>();
 var updateCacheGate = new SemaphoreSlim(1, 1);
 UpdateCacheEntry? updateCache = null;
@@ -622,8 +628,9 @@ app.MapGet("/api/state", async (HttpContext context) =>
 {
     var user = CurrentUser(context);
     if (user is null) return Results.Unauthorized();
-    var json = await ReadStateAsync(connectionString);
-    return Results.Text(FilterStateForUser(json, user), "application/json");
+    var stored = await StateStore.ReadAsync(connectionString, GarageLogSeed.Json);
+    context.Response.Headers["X-GarageLog-State-Revision"] = stored.Revision.ToString(System.Globalization.CultureInfo.InvariantCulture);
+    return Results.Text(FilterStateForUser(stored.Json, user), "application/json");
 });
 
 app.MapPut("/api/state", async (JsonElement state, HttpContext context) =>
@@ -656,6 +663,17 @@ app.MapPut("/api/state", async (JsonElement state, HttpContext context) =>
     }
 
     var submitted = JsonNode.Parse(state.GetRawText())?.AsObject() ?? new JsonObject();
+    // Share links are persisted only in DocumentShareLinks. Never allow an old
+    // browser/session to put the retired per-document share fields back into AppState.
+    if (submitted["documents"] is JsonArray submittedDocuments)
+    {
+        foreach (var document in submittedDocuments.OfType<JsonObject>())
+        {
+            document.Remove("shareToken");
+            document.Remove("shareEnabled");
+        }
+    }
+
     var mileageValue = ReadNonNegativeMileage(submitted["mileage"]);
 
     string? activeVehicleId = null;
@@ -679,11 +697,36 @@ app.MapPut("/api/state", async (JsonElement state, HttpContext context) =>
     mileageValue ??= 0;
     submitted["mileage"] = mileageValue.Value;
 
+    if (!long.TryParse(context.Request.Headers["X-GarageLog-State-Revision"].ToString(), out var expectedRevision)
+        || expectedRevision < 1)
+        return Results.BadRequest(new { error = "The GarageLog state revision is missing. Refresh GarageLog and try again." });
+
     using var normalizedDocument = JsonDocument.Parse(submitted.ToJsonString());
-    var fullState = await ReadStateAsync(connectionString);
-    var normalized = MergeStateForUser(fullState, normalizedDocument.RootElement, user);
-    await WriteStateAsync(connectionString, normalized);
-    return Results.Ok(new { saved = true, mileage = mileageValue.Value, savedAtUtc = DateTimeOffset.UtcNow });
+    var stored = await StateStore.ReadAsync(connectionString, GarageLogSeed.Json);
+    if (stored.Revision != expectedRevision)
+    {
+        context.Response.Headers["X-GarageLog-State-Revision"] = stored.Revision.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        return Results.Conflict(new
+        {
+            error = "GarageLog data changed on another device or background process. The latest data must be reloaded before saving.",
+            revision = stored.Revision
+        });
+    }
+
+    var normalized = MergeStateForUser(stored.Json, normalizedDocument.RootElement, user);
+    var write = await StateStore.WriteAsync(connectionString, normalized, expectedRevision);
+    if (!write.Saved)
+    {
+        context.Response.Headers["X-GarageLog-State-Revision"] = write.Revision.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        return Results.Conflict(new
+        {
+            error = "GarageLog data changed while this save was in progress. The latest data must be reloaded before saving.",
+            revision = write.Revision
+        });
+    }
+
+    context.Response.Headers["X-GarageLog-State-Revision"] = write.Revision.ToString(System.Globalization.CultureInfo.InvariantCulture);
+    return Results.Ok(new { saved = true, mileage = mileageValue.Value, revision = write.Revision, savedAtUtc = DateTimeOffset.UtcNow });
 });
 
 app.MapPut("/api/settings/appearance", async (JsonElement appearance, HttpContext context) =>
@@ -711,21 +754,23 @@ app.MapPut("/api/settings/appearance", async (JsonElement appearance, HttpContex
     if (sidebarColor is null || topbarColor is null || highlightColor is null)
         return Results.BadRequest(new { error = "Appearance colors must use six-digit hexadecimal values." });
 
-    var fullState = await ReadStateAsync(connectionString);
-    var root = JsonNode.Parse(fullState)?.AsObject() ?? new JsonObject();
-    root["appearanceSettings"] = new JsonObject
-    {
-        ["sidebarColor"] = sidebarColor,
-        ["topbarColor"] = topbarColor,
-        ["highlightColor"] = highlightColor
-    };
-    await WriteStateAsync(connectionString, root.ToJsonString(new JsonSerializerOptions
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        WriteIndented = true
-    }));
+    var appearanceWrite = await StateStore.MutateAsync(
+        connectionString,
+        root =>
+        {
+            root["appearanceSettings"] = new JsonObject
+            {
+                ["sidebarColor"] = sidebarColor,
+                ["topbarColor"] = topbarColor,
+                ["highlightColor"] = highlightColor
+            };
+            return root;
+        },
+        GarageLogSeed.Json);
+    if (!appearanceWrite.Saved)
+        return Results.Conflict(new { error = "GarageLog data changed while appearance settings were being saved. Refresh and try again." });
 
-    return Results.Ok(new { saved = true, sidebarColor, topbarColor, highlightColor, savedAtUtc = DateTimeOffset.UtcNow });
+    return Results.Ok(new { saved = true, sidebarColor, topbarColor, highlightColor, revision = appearanceWrite.Revision, savedAtUtc = DateTimeOffset.UtcNow });
 });
 
 
@@ -1170,7 +1215,13 @@ static async Task InitializeDatabaseAsync(string connectionString)
         CREATE TABLE IF NOT EXISTS AppState (
             Id INTEGER PRIMARY KEY CHECK (Id = 1),
             Json TEXT NOT NULL,
-            UpdatedUtc TEXT NOT NULL
+            UpdatedUtc TEXT NOT NULL,
+            Revision INTEGER NOT NULL DEFAULT 1
+        );
+
+        CREATE TABLE IF NOT EXISTS SchemaMigrations (
+            Id TEXT PRIMARY KEY,
+            AppliedUtc TEXT NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS Users (
@@ -1215,36 +1266,7 @@ static async Task InitializeDatabaseAsync(string connectionString)
 }
 
 static async Task<string> ReadStateAsync(string connectionString)
-{
-    await using var connection = new SqliteConnection(connectionString);
-    await connection.OpenAsync();
-
-    await using var command = connection.CreateCommand();
-    command.CommandText = "SELECT Json FROM AppState WHERE Id = 1;";
-    var result = await command.ExecuteScalarAsync();
-    return result as string ?? GarageLogSeed.Json;
-}
-
-static async Task WriteStateAsync(string connectionString, string json)
-{
-    await using var connection = new SqliteConnection(connectionString);
-    await connection.OpenAsync();
-
-    await using var transaction = await connection.BeginTransactionAsync();
-    await using var command = connection.CreateCommand();
-    command.Transaction = (SqliteTransaction)transaction;
-    command.CommandText = """
-        INSERT INTO AppState (Id, Json, UpdatedUtc)
-        VALUES (1, $json, $updatedUtc)
-        ON CONFLICT(Id) DO UPDATE SET
-            Json = excluded.Json,
-            UpdatedUtc = excluded.UpdatedUtc;
-        """;
-    command.Parameters.AddWithValue("$json", json);
-    command.Parameters.AddWithValue("$updatedUtc", DateTimeOffset.UtcNow.ToString("O"));
-    await command.ExecuteNonQueryAsync();
-    await transaction.CommitAsync();
-}
+    => (await StateStore.ReadAsync(connectionString, GarageLogSeed.Json)).Json;
 
 
 static bool TryResolveDocumentShareExpiration(
@@ -1586,50 +1608,6 @@ static async Task TouchDocumentShareAsync(string connectionString, string token)
     await command.ExecuteNonQueryAsync();
 }
 
-static async Task MigrateLegacyDocumentSharesAsync(string connectionString)
-{
-    using var stateDocument = JsonDocument.Parse(await ReadStateAsync(connectionString));
-    if (!stateDocument.RootElement.TryGetProperty("documents", out var documents)
-        || documents.ValueKind != JsonValueKind.Array)
-        return;
-
-    await using var connection = new SqliteConnection(connectionString);
-    await connection.OpenAsync();
-
-    foreach (var document in documents.EnumerateArray())
-    {
-        if (!document.TryGetProperty("shareToken", out var tokenElement)) continue;
-        var token = tokenElement.GetString();
-        if (string.IsNullOrWhiteSpace(token)
-            || !Regex.IsMatch(token, "^[A-Za-z0-9_-]{16,128}$"))
-            continue;
-
-        if (document.TryGetProperty("shareEnabled", out var enabledElement)
-            && enabledElement.ValueKind == JsonValueKind.False)
-            continue;
-
-        if (!document.TryGetProperty("storedName", out var storedElement)) continue;
-        var storedName = Path.GetFileName(storedElement.GetString());
-        if (string.IsNullOrWhiteSpace(storedName)) continue;
-
-        var createdUtc = DateTimeOffset.UtcNow;
-        if (document.TryGetProperty("addedAt", out var addedElement)
-            && DateTimeOffset.TryParse(addedElement.GetString(), out var addedUtc))
-            createdUtc = addedUtc;
-
-        await using var command = connection.CreateCommand();
-        command.CommandText = """
-            INSERT OR IGNORE INTO DocumentShareLinks
-                (Token, StoredName, CreatedByUserId, CreatedUtc, ExpiresUtc, RevokedUtc, LastAccessUtc, AccessCount)
-            VALUES
-                ($token, $storedName, NULL, $createdUtc, NULL, NULL, NULL, 0);
-            """;
-        command.Parameters.AddWithValue("$token", token);
-        command.Parameters.AddWithValue("$storedName", storedName);
-        command.Parameters.AddWithValue("$createdUtc", createdUtc.ToString("O"));
-        await command.ExecuteNonQueryAsync();
-    }
-}
 static GarageLogUser? CurrentUser(HttpContext context) => context.Items.TryGetValue(GarageLogAuthConstants.CurrentUserItemKey, out var value) ? value as GarageLogUser : null;
 static bool IsAdministrator(GarageLogUser user) => string.Equals(user.Role, UserRoles.Administrator, StringComparison.Ordinal);
 static bool CanWrite(GarageLogUser user) => IsAdministrator(user) || string.Equals(user.AccessLevel, AccessLevels.ReadWrite, StringComparison.Ordinal);
