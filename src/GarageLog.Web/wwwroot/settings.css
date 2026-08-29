@@ -849,3 +849,8 @@
 .settings-notifications-section .settings-notification-inline-fields small{font-size:10px;line-height:1.45}
 .settings-notifications-section .settings-notification-inline-fields input{font-size:12px}
 @media(max-width:600px){.settings-experimental-note{font-size:10.5px!important}.settings-notifications-section .settings-section-heading h2{font-size:19px}}
+
+/* Persistent recall access */
+.settings-recall-vehicle-actions{display:flex!important;align-items:center;justify-content:flex-end;gap:6px!important;white-space:nowrap}
+.settings-recall-view-button,.settings-recall-match-button{min-height:30px;padding:6px 9px;font-size:9.5px}.settings-recall-view-button{display:inline-flex;align-items:center;gap:5px}.settings-recall-view-button svg{width:11px;height:11px}
+@media(max-width:760px){.settings-recall-vehicle-actions{grid-column:1/-1;justify-content:stretch}.settings-recall-vehicle-actions button{flex:1}}

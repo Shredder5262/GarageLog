@@ -3272,3 +3272,11 @@
 @media(max-width:760px){.info-dialog.recall-detail-dialog{width:min(96vw,780px)}.recall-detail-dialog .info-modal-body{padding:15px}.recall-modal-actions{align-items:stretch;flex-direction:column}.recall-print-actions{display:grid;grid-template-columns:1fr 1fr}.recall-print-actions .secondary,.recall-modal-actions>a.secondary{justify-content:center}.recall-detail-dialog .recall-modal-list dl{grid-template-columns:1fr;gap:2px}}
 
 .recall-print-selected-count{font-size:10px;font-weight:800;color:inherit}
+
+/* Recall follow-up actions and persistent recall state */
+.recall-cleared-badge{padding:3px 6px;border-radius:999px;background:#f1f5f9;color:#64748b;font-size:8px;font-weight:800;letter-spacing:.02em}
+.recall-followup-actions{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:10px;align-items:center;padding:11px 12px;border:1px solid #dbeafe;border-radius:10px;background:#f8fbff}
+.recall-followup-actions>div{display:grid;gap:2px}.recall-followup-actions>div strong{font-size:11.5px}.recall-followup-actions>div small{font-size:9.5px;line-height:1.4;color:var(--muted)}
+.recall-followup-actions label{display:flex;align-items:center;gap:7px;font-size:10px;font-weight:750;color:#334155;white-space:nowrap}.recall-followup-actions label input{width:16px;height:16px}
+.recall-followup-actions .secondary{display:inline-flex;align-items:center;gap:6px;min-height:36px;padding:8px 11px;font-size:10.5px;white-space:nowrap}.recall-followup-actions svg{width:13px;height:13px}.recall-add-selected-count{font-size:10px}
+@media(max-width:760px){.recall-followup-actions{grid-template-columns:1fr}.recall-followup-actions label{white-space:normal}.recall-followup-actions .secondary{justify-content:center}}

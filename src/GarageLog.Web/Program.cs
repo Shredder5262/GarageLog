@@ -367,6 +367,24 @@ app.MapGet("/api/recalls", async (HttpContext context, int? limit) =>
     return Results.Ok(new { recalls, summary });
 });
 
+app.MapPost("/api/recalls/dismiss", async (RecallDismissRequest request, HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    if (user is null) return Results.Unauthorized();
+    if (!CanWrite(user))
+        return Results.Json(new { error = "Write access is required to clear recall badges." }, statusCode: StatusCodes.Status403Forbidden);
+
+    var vehicleId = (request.VehicleId ?? string.Empty).Trim();
+    if (string.IsNullOrWhiteSpace(vehicleId)) return Results.BadRequest(new { error = "VehicleId is required." });
+    if (!IsAdministrator(user) && !CanViewAllVehicles(user) && !AssignedVehicleIds(user).Contains(vehicleId))
+        return Results.Json(new { error = "This vehicle is not available to this account." }, statusCode: StatusCodes.Status403Forbidden);
+
+    var dismissed = await RecallFeature.DismissCurrentRecallsAsync(connectionString, vehicleId, request.CampaignNumbers);
+    HashSet<string>? visibleVehicleIds = IsAdministrator(user) || CanViewAllVehicles(user) ? null : AssignedVehicleIds(user);
+    var recalls = await RecallFeature.ReadRecallsAsync(connectionString, GarageLogSeed.Json, visibleVehicleIds, 250);
+    return Results.Ok(new { dismissed, recalls });
+});
+
 app.MapGet("/api/recalls/match/{vehicleId}", async (string vehicleId, HttpContext context, IHttpClientFactory httpClientFactory) =>
 {
     var user = CurrentUser(context);
@@ -2266,6 +2284,7 @@ sealed record NotificationSettingsUpdateRequest(
     int MileageLeadMiles,
     string? RecallCheckSchedule);
 sealed record RecallVehicleMatchSaveRequest(string VehicleId, string Year, string Make, string Model);
+sealed record RecallDismissRequest(string? VehicleId, string[]? CampaignNumbers);
 sealed record AdminCreateUserRequest(string Username, string DisplayName, string Password, string? Role, string? AccessLevel, string? VisibilityScope, string[]? AssignedVehicleIds);
 sealed record AdminUpdateUserRequest(string Username, string DisplayName, string? Role, string? AccessLevel, string? VisibilityScope, string[]? AssignedVehicleIds, bool IsActive);
 sealed record AdminResetPasswordRequest(string NewPassword);

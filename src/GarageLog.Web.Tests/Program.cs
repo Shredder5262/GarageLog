@@ -13,6 +13,7 @@ await RunAsync("server notification settings persist", TestServerNotificationSet
 await RunAsync("recall schedule migrates existing settings", TestRecallScheduleMigrationAsync);
 await RunAsync("NHTSA vehicle match validates alternate make/model", TestRecallVehicleMatchAsync);
 await RunAsync("NHTSA zero-recall HTTP 400 is treated as empty success", TestNhtsaZeroRecall400Async);
+await RunAsync("recall badge dismissal does not delete cached recall data", TestRecallDismissalAsync);
 await RunAsync("linked maintenance reminder produces one server alert", TestLinkedReminderDedupeAsync);
 
 if (failures.Count > 0)
@@ -410,6 +411,59 @@ static async Task TestNhtsaZeroRecall400Async()
         var summary = await RecallFeature.ReadSummaryAsync(cs, "{}");
         var vehicle = summary.Vehicles.Single(item => item.VehicleId == "bike-1");
         Assert(vehicle.LastSuccessUtc is not null && string.IsNullOrWhiteSpace(vehicle.LastError) && vehicle.RecallCount == 0, "zero-recall NHTSA response did not persist as a successful check");
+    }
+    finally
+    {
+        TryDelete(path);
+    }
+}
+
+static async Task TestRecallDismissalAsync()
+{
+    var path = TempDatabasePath();
+    try
+    {
+        var cs = ConnectionString(path);
+        await using (var connection = new SqliteConnection(cs))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                CREATE TABLE AppState (
+                    Id INTEGER PRIMARY KEY CHECK (Id = 1),
+                    Json TEXT NOT NULL,
+                    UpdatedUtc TEXT NOT NULL,
+                    Revision INTEGER NOT NULL DEFAULT 1
+                );
+                INSERT INTO AppState (Id, Json, UpdatedUtc, Revision)
+                VALUES (1, '{"vehicles":[{"id":"vehicle-1","name":"Test Vehicle"}]}', $now, 1);
+                """;
+            command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+            await command.ExecuteNonQueryAsync();
+        }
+        await RecallFeature.InitializeAsync(cs);
+        await using (var connection = new SqliteConnection(cs))
+        {
+            await connection.OpenAsync();
+            await using var insert = connection.CreateCommand();
+            insert.CommandText = """
+                INSERT INTO VehicleRecalls
+                    (VehicleId, CampaignNumber, Manufacturer, Component, Summary, Consequence, Remedy,
+                     SourceUrl, FirstSeenUtc, LastSeenUtc, IsCurrent)
+                VALUES
+                    ('vehicle-1','26V000001','TEST','BRAKES','Recall summary','Risk','Repair',
+                     'https://www.nhtsa.gov/recalls',$now,$now,1);
+                """;
+            insert.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+            await insert.ExecuteNonQueryAsync();
+        }
+
+        var before = await RecallFeature.ReadRecallsAsync(cs, "{}");
+        Assert(before.Count == 1 && !before[0].IsDismissed, "new recall should surface on the recall badge");
+        await RecallFeature.DismissCurrentRecallsAsync(cs, "vehicle-1", new[] { "26V000001" });
+        var after = await RecallFeature.ReadRecallsAsync(cs, "{}");
+        Assert(after.Count == 1, "clearing the recall badge must not delete cached recall details");
+        Assert(after[0].IsDismissed, "cleared recall campaign was not marked dismissed");
     }
     finally
     {

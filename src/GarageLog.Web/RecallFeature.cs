@@ -21,7 +21,8 @@ internal sealed record VehicleRecallDto(
     bool OverTheAirUpdate,
     string SourceUrl,
     DateTimeOffset FirstSeenUtc,
-    DateTimeOffset LastSeenUtc);
+    DateTimeOffset LastSeenUtc,
+    bool IsDismissed);
 
 internal sealed record VehicleRecallSyncStatusDto(
     string VehicleId,
@@ -126,6 +127,16 @@ internal static class RecallFeature
                 SourceUrl TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS VehicleRecallDismissals (
+                VehicleId TEXT NOT NULL,
+                CampaignNumber TEXT NOT NULL,
+                DismissedUtc TEXT NOT NULL,
+                PRIMARY KEY(VehicleId, CampaignNumber)
+            );
+
+            CREATE INDEX IF NOT EXISTS IX_VehicleRecallDismissals_Vehicle
+                ON VehicleRecallDismissals(VehicleId);
+
             CREATE TABLE IF NOT EXISTS VehicleRecallProfiles (
                 VehicleId TEXT PRIMARY KEY,
                 GarageYear TEXT NOT NULL,
@@ -141,6 +152,7 @@ internal static class RecallFeature
             """;
         await command.ExecuteNonQueryAsync();
         await DatabaseMaintenance.MarkMigrationAsync(connection, "20260829_05_nhtsa_recall_cache");
+        await DatabaseMaintenance.MarkMigrationAsync(connection, "20260829_10_recall_dismissal_state");
         const string vehicleProfileMigration = "20260829_08_nhtsa_vehicle_profiles";
         if (!await DatabaseMaintenance.HasMigrationAsync(connection, vehicleProfileMigration))
         {
@@ -368,11 +380,14 @@ internal static class RecallFeature
         await connection.OpenAsync();
         await using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT VehicleId, CampaignNumber, Manufacturer, Component, Summary, Consequence, Remedy, Notes,
-                   ReportReceivedDate, ParkIt, ParkOutside, OverTheAirUpdate, SourceUrl, FirstSeenUtc, LastSeenUtc
-            FROM VehicleRecalls
-            WHERE IsCurrent = 1
-            ORDER BY COALESCE(ReportReceivedDate, '') DESC, CampaignNumber DESC
+            SELECT r.VehicleId, r.CampaignNumber, r.Manufacturer, r.Component, r.Summary, r.Consequence, r.Remedy, r.Notes,
+                   r.ReportReceivedDate, r.ParkIt, r.ParkOutside, r.OverTheAirUpdate, r.SourceUrl, r.FirstSeenUtc, r.LastSeenUtc,
+                   CASE WHEN d.CampaignNumber IS NULL THEN 0 ELSE 1 END AS IsDismissed
+            FROM VehicleRecalls r
+            LEFT JOIN VehicleRecallDismissals d
+              ON d.VehicleId = r.VehicleId AND d.CampaignNumber = r.CampaignNumber
+            WHERE r.IsCurrent = 1
+            ORDER BY COALESCE(r.ReportReceivedDate, '') DESC, r.CampaignNumber DESC
             LIMIT $limit;
             """;
         command.Parameters.AddWithValue("$limit", Math.Clamp(limit, 1, 500));
@@ -390,7 +405,8 @@ internal static class RecallFeature
                 reader.GetInt64(9) != 0, reader.GetInt64(10) != 0, reader.GetInt64(11) != 0,
                 reader.GetString(12),
                 ParseRoundtrip(reader.GetString(13)) ?? DateTimeOffset.UtcNow,
-                ParseRoundtrip(reader.GetString(14)) ?? DateTimeOffset.UtcNow));
+                ParseRoundtrip(reader.GetString(14)) ?? DateTimeOffset.UtcNow,
+                reader.GetInt64(15) != 0));
         }
         return recalls;
     }
@@ -557,6 +573,60 @@ internal static class RecallFeature
         command.Parameters.AddWithValue("$error", error.Length > 500 ? error[..500] : error);
         command.Parameters.AddWithValue("$sourceUrl", sourceUrl);
         await command.ExecuteNonQueryAsync();
+    }
+
+    public static async Task<int> DismissCurrentRecallsAsync(
+        string connectionString,
+        string vehicleId,
+        IEnumerable<string>? campaignNumbers = null)
+    {
+        await InitializeAsync(connectionString);
+        var requested = (campaignNumbers ?? Array.Empty<string>())
+            .Select(value => value?.Trim())
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        await using var connection = new SqliteConnection(connectionString);
+        await connection.OpenAsync();
+
+        var campaigns = requested;
+        if (campaigns.Length == 0)
+        {
+            var current = new List<string>();
+            await using var read = connection.CreateCommand();
+            read.CommandText = "SELECT CampaignNumber FROM VehicleRecalls WHERE VehicleId = $vehicleId AND IsCurrent = 1;";
+            read.Parameters.AddWithValue("$vehicleId", vehicleId);
+            await using var reader = await read.ExecuteReaderAsync();
+            while (await reader.ReadAsync()) current.Add(reader.GetString(0));
+            campaigns = current.ToArray();
+        }
+
+        if (campaigns.Length == 0) return 0;
+        var now = DateTimeOffset.UtcNow.ToString("O");
+        var changed = 0;
+        await using var transaction = await connection.BeginTransactionAsync();
+        foreach (var campaign in campaigns)
+        {
+            await using var command = connection.CreateCommand();
+            command.Transaction = (SqliteTransaction)transaction;
+            command.CommandText = """
+                INSERT INTO VehicleRecallDismissals (VehicleId, CampaignNumber, DismissedUtc)
+                SELECT $vehicleId, $campaign, $now
+                WHERE EXISTS (
+                    SELECT 1 FROM VehicleRecalls
+                    WHERE VehicleId = $vehicleId AND CampaignNumber = $campaign AND IsCurrent = 1
+                )
+                ON CONFLICT(VehicleId, CampaignNumber) DO UPDATE SET DismissedUtc = excluded.DismissedUtc;
+                """;
+            command.Parameters.AddWithValue("$vehicleId", vehicleId);
+            command.Parameters.AddWithValue("$campaign", campaign);
+            command.Parameters.AddWithValue("$now", now);
+            changed += await command.ExecuteNonQueryAsync();
+        }
+        await transaction.CommitAsync();
+        return changed;
     }
 
     private static async Task<VehicleRecallSyncStatusDto?> ReadVehicleStatusAsync(string connectionString, string vehicleId)
@@ -734,6 +804,13 @@ internal static class RecallFeature
             clearStatus.CommandText = "DELETE FROM VehicleRecallSyncStatus WHERE VehicleId = $vehicleId;";
             clearStatus.Parameters.AddWithValue("$vehicleId", vehicleId);
             await clearStatus.ExecuteNonQueryAsync();
+        }
+        await using (var clearDismissals = connection.CreateCommand())
+        {
+            clearDismissals.Transaction = (SqliteTransaction)transaction;
+            clearDismissals.CommandText = "DELETE FROM VehicleRecallDismissals WHERE VehicleId = $vehicleId;";
+            clearDismissals.Parameters.AddWithValue("$vehicleId", vehicleId);
+            await clearDismissals.ExecuteNonQueryAsync();
         }
         await using (var notificationTable = connection.CreateCommand())
         {

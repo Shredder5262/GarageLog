@@ -26,6 +26,7 @@ let selectedReportTemplateId='ownership-cost';
 let notificationPanelOpen=false;
 let serverNotifications=[];
 let serverNotificationsEnabled=false;
+let cachedRecallCampaigns=[];
 let expenseViewMode='expenses';
 let editingRecurringExpenseId=null;
 let dashboardExpenseRange='this-year';
@@ -188,6 +189,7 @@ function updateProfileChrome(){const user=sessionUser(),trigger=document.getElem
 function permissionNotice(){const user=sessionUser();if(!user||canWrite())return'';return `<div class="permission-notice">${svg('info')}<div><strong>Read-only access</strong><span>You can view the GarageLog records available to this account, but changes are disabled.</span></div></div>`}
 async function authRequest(url,options={}){const response=await fetch(url,{cache:'no-store',...options});const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(data.error||`Request failed (${response.status})`);return data}
 async function refreshServerNotifications(){try{const result=await authRequest('/api/notifications?limit=80');serverNotifications=Array.isArray(result?.notifications)?result.notifications:[];serverNotificationsEnabled=Boolean(result?.enabled);return serverNotifications}catch(error){console.warn('GarageLog server notifications unavailable',error);serverNotifications=[];serverNotificationsEnabled=false;return[]}}
+async function refreshRecallCampaigns(){try{const result=await authRequest('/api/recalls?limit=250');cachedRecallCampaigns=Array.isArray(result?.recalls)?result.recalls:[];return cachedRecallCampaigns}catch(error){console.warn('GarageLog recall cache unavailable',error);cachedRecallCampaigns=[];return[]}}
 async function checkForGarageLogUpdates(){
  if(!isAdministrator())return;
  try{const result=await authRequest('/api/update/status');availableUpdate=result?.updateAvailable?result:null;if(state)render()}catch(error){console.warn('GarageLog update check unavailable',error)}
@@ -245,6 +247,7 @@ async function loadState({persistNormalization=true}={}){
  // an older browser snapshot.
  if(migrated&&canWrite()&&persistNormalization){try{await saveNow()}catch(error){console.warn('GarageLog startup normalization could not be persisted.',error)}}
  await refreshServerNotifications();
+ await refreshRecallCampaigns();
 }
 function makeVehicleId(){return globalThis.crypto?.randomUUID?.()||`vehicle-${Date.now()}-${Math.random().toString(16).slice(2)}`}
 function makeRecordId(prefix='record'){return globalThis.crypto?.randomUUID?.()||`${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`}
@@ -1448,6 +1451,7 @@ function vehicleHealthStatus(vehicleId=state.activeVehicleId){
  const addUnique=(collection,message)=>{if(message&&!collection.includes(message))collection.push(message)};
  maintenance.forEach(item=>{
    const schedule=mileageScheduleMeta(item),status=String(schedule?.status||item.status||'').toLowerCase();
+   if(String(item?.priority||'').toLowerCase()==='urgent'&&status!=='completed'){addUnique(urgent,`${item.name||'Maintenance'} needs immediate attention`);return}
    let overdueMiles=schedule?.remaining<0?Math.abs(schedule.remaining):0;
    if(!overdueMiles&&Number(item.progress||0)>Number(item.max||0))overdueMiles=Number(item.progress||0)-Number(item.max||0);
    if(status.includes('overdue')){
@@ -1459,6 +1463,7 @@ function vehicleHealthStatus(vehicleId=state.activeVehicleId){
  });
  reminders.forEach(item=>{
    if(item.maintenanceId&&linkedMaintenanceIds.has(item.maintenanceId))return;
+   if(String(item?.priority||'').toLowerCase()==='urgent'&&String(item?.status||'').toLowerCase()!=='completed'){addUnique(urgent,`${item.name||'Reminder'} needs immediate attention`);return}
    const mileageSchedule=mileageScheduleMeta(item);
    if(mileageSchedule){
      if(mileageSchedule.status==='Overdue')addUnique(warning,`${item.name||'Reminder'} overdue`);
@@ -1486,12 +1491,12 @@ function dashboardReminderMeta(reminder){
   return{status,rank,due}
 }
 function compareDashboardReminders(a,b){const left=dashboardReminderMeta(a),right=dashboardReminderMeta(b);return left.rank-right.rank||left.due-right.due||String(a?.name||'').localeCompare(String(b?.name||''))}
-function activeRecallNotifications(vehicleId=state?.activeVehicleId){
- const id=String(vehicleId||'');if(!id)return[];const dismissed=new Set(notificationSettings().dismissedIds||[]);
- return (serverNotifications||[]).filter(item=>String(item.category||'').toLowerCase()==='recall'&&String(item.vehicleId||'')===id&&!dismissed.has(String(item.id)));
+function activeVehicleRecallCampaigns(vehicleId=state?.activeVehicleId,{includeDismissed=false}={}){
+ const id=String(vehicleId||'');if(!id)return[];
+ return (cachedRecallCampaigns||[]).filter(item=>String(item.vehicleId||'')===id&&(includeDismissed||!item.isDismissed))
 }
 function dashboardRecallBadge(){
- const items=activeRecallNotifications();if(!items.length)return'';const urgent=items.some(item=>String(item.tone||'').toLowerCase()==='red');
+ const items=activeVehicleRecallCampaigns();if(!items.length)return'';const urgent=items.some(item=>Boolean(item.parkIt));
  return `<button type="button" class="dashboard-recall-badge ${urgent?'urgent':''}" onclick="openDashboardRecallDetails()">${svg('warning')}<span>Recall</span>${items.length>1?`<b>${items.length}</b>`:''}</button>`
 }
 function recallCampaignPrintMarkup(item){
@@ -1503,33 +1508,55 @@ function printRecallCampaigns(items,label){
  const vehicleName=vehicleFullName(vehicle),generated=new Date().toLocaleString();
  popup.document.open();popup.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${esc(vehicleName)} - ${esc(label)}</title><style>@page{margin:.55in}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#172033;margin:0;font-size:11pt;line-height:1.45}.print-header{border-bottom:2px solid #1d4ed8;padding-bottom:12px;margin-bottom:20px}.print-header h1{font-size:20pt;margin:0 0 4px}.print-header p{margin:2px 0;color:#526173}.print-note{padding:9px 11px;background:#fff7ed;border:1px solid #fed7aa;border-radius:6px;margin:0 0 18px}.print-recall-item{break-inside:avoid;border:1px solid #cbd5e1;border-radius:7px;padding:14px;margin:0 0 14px}.print-recall-heading{display:flex;justify-content:space-between;gap:12px;color:#c2410c;font-weight:700;font-size:9.5pt}.print-recall-heading b{background:#dc2626;color:#fff;border-radius:999px;padding:2px 7px;font-size:8pt}.print-recall-item h2{font-size:13pt;margin:5px 0 10px}.print-recall-block{display:grid;grid-template-columns:72px 1fr;gap:8px;margin-top:7px}.print-recall-block h3{font-size:9pt;color:#64748b;margin:0}.print-recall-block p{margin:0}.print-footer{margin-top:18px;color:#64748b;font-size:8.5pt}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}</style></head><body><header class="print-header"><h1>Vehicle Recall Notice</h1><p><strong>${esc(vehicleName)}</strong></p><p>${esc(label)} · Printed ${esc(generated)}</p></header><div class="print-note">These are NHTSA model-level campaign matches. Confirm VIN-specific open-recall status with NHTSA or an authorized dealer.</div>${campaigns.map(recallCampaignPrintMarkup).join('')}<div class="print-footer">Generated by GarageLog from cached NHTSA recall information.</div></body></html>`);popup.document.close();popup.focus();window.setTimeout(()=>{try{popup.focus();popup.print()}catch(error){console.warn('GarageLog recall print dialog could not be opened.',error);toast('Unable to open the print dialog')}},250)
 }
+function selectedRecallCampaigns(){return recallModalCampaigns.filter(entry=>recallModalSelectedCampaignNumbers.has(String(entry.campaignNumber||'')))}
 function syncRecallCampaignSelection(){
  document.querySelectorAll('.recall-modal-list article[data-campaign]').forEach(card=>{const selected=recallModalSelectedCampaignNumbers.has(String(card.dataset.campaign||''));card.classList.toggle('selected',selected);card.setAttribute('aria-checked',selected?'true':'false');const box=card.querySelector('.recall-selection-box');if(box)box.textContent=selected?'✓':''});
- const button=document.querySelector('.recall-print-selected'),count=document.querySelector('.recall-print-selected-count'),selectedCount=recallModalSelectedCampaignNumbers.size;if(button)button.disabled=selectedCount===0;if(count)count.textContent=selectedCount?`(${selectedCount})`:''
+ const selectedCount=recallModalSelectedCampaignNumbers.size;
+ const printButton=document.querySelector('.recall-print-selected'),printCount=document.querySelector('.recall-print-selected-count');if(printButton)printButton.disabled=selectedCount===0;if(printCount)printCount.textContent=selectedCount?`(${selectedCount})`:'';
+ const addButton=document.querySelector('.recall-add-reminders'),addCount=document.querySelector('.recall-add-selected-count');if(addButton)addButton.disabled=selectedCount===0||!canWrite();if(addCount)addCount.textContent=selectedCount?`(${selectedCount})`:''
 }
 window.toggleRecallCampaign=function(campaignNumber){
  const key=String(campaignNumber||'');if(!key)return;if(recallModalSelectedCampaignNumbers.has(key))recallModalSelectedCampaignNumbers.delete(key);else recallModalSelectedCampaignNumbers.add(key);syncRecallCampaignSelection()
 }
-window.printSelectedRecall=function(){const items=recallModalCampaigns.filter(entry=>recallModalSelectedCampaignNumbers.has(String(entry.campaignNumber||''))),count=items.length;printRecallCampaigns(items,count===1?'Selected recall campaign':`${count} selected recall campaigns`)}
+window.printSelectedRecall=function(){const items=selectedRecallCampaigns(),count=items.length;printRecallCampaigns(items,count===1?'Selected recall campaign':`${count} selected recall campaigns`)}
 window.printAllRecalls=function(){printRecallCampaigns(recallModalCampaigns,'All recall campaigns')}
-window.openDashboardRecallDetails=async function(){
- const vehicle=activeVehicle(),vehicleId=String(vehicle?.id||state?.activeVehicleId||''),notices=activeRecallNotifications(vehicleId);if(!vehicleId||!notices.length)return;
+function recallTaskName(item){const component=String(item?.component||'Safety recall').trim();return `URGENT RECALL — ${component}`}
+window.addSelectedRecallsToReminders=async function(){
+ if(!canWrite()){toast('Read-only accounts cannot add recall tasks');return}
+ const campaigns=selectedRecallCampaigns(),vehicle=recallModalVehicle;if(!vehicle||!campaigns.length){toast('Select at least one recall campaign');return}
+ const vehicleId=String(vehicle.id),alsoMaintenance=Boolean(document.getElementById('recallAlsoMaintenance')?.checked),today=new Date().toISOString().slice(0,10),now=new Date().toISOString();let remindersAdded=0,maintenanceAdded=0;
+ for(const item of campaigns){
+   const campaign=String(item.campaignNumber||'').trim();if(!campaign)continue;const name=recallTaskName(item);
+   let reminder=(state.reminders||[]).find(entry=>String(entry.vehicleId)===vehicleId&&String(entry.recallCampaignNumber||'').toLowerCase()===campaign.toLowerCase());
+   let maintenance=(state.maintenance||[]).find(entry=>String(entry.vehicleId)===vehicleId&&String(entry.recallCampaignNumber||'').toLowerCase()===campaign.toLowerCase());
+   if(!reminder){reminder={id:makeRecordId('reminder'),vehicleId,name,rule:`NHTSA campaign ${campaign} — immediate attention`,due:today,status:'Due Soon',triggerType:'date',leadTime:0,leadUnit:'days',priority:'Urgent',source:'nhtsa-recall',recallCampaignNumber:campaign,recallSourceUrl:item.sourceUrl||'',notes:item.summary||'',createdAt:now,updatedAt:now};state.reminders.unshift(reminder);remindersAdded++}
+   if(alsoMaintenance&&!maintenance){maintenance={id:makeRecordId('maintenance'),vehicleId,name,interval:'Urgent safety recall',progress:0,max:1,due:'Immediate',status:'Due Soon',priority:'Urgent',source:'nhtsa-recall',recallCampaignNumber:campaign,recallSourceUrl:item.sourceUrl||'',notes:item.remedy||item.summary||'',reminderId:reminder.id,createdAt:now,updatedAt:now};state.maintenance.unshift(maintenance);maintenanceAdded++}
+   if(alsoMaintenance&&maintenance){reminder.maintenanceId=maintenance.id;maintenance.reminderId=reminder.id;maintenance.priority='Urgent';reminder.priority='Urgent'}
+ }
+ try{await saveNow();document.getElementById('infoModal')?.close();render();const parts=[];parts.push(remindersAdded?`${remindersAdded} reminder${remindersAdded===1?'':'s'} added`:'Reminders already existed');if(alsoMaintenance)parts.push(maintenanceAdded?`${maintenanceAdded} maintenance item${maintenanceAdded===1?'':'s'} added`:'Maintenance items already existed');toast(parts.join(' · '))}catch(error){toast(error.message||'Unable to add recall tasks')}
+}
+async function openVehicleRecallDetailsInternal(vehicleId){
+ const id=String(vehicleId||'');if(!id)return;const vehicle=(state.vehicles||[]).find(entry=>String(entry.id)===id);if(!vehicle){toast('Vehicle not found');return}
  const modal=document.getElementById('infoModal'),title=document.getElementById('infoModalTitle'),subtitle=document.getElementById('infoModalSubtitle'),body=document.getElementById('infoModalBody'),primary=document.getElementById('infoModalPrimary'),secondary=document.getElementById('infoModalSecondary');
  modal.classList.add('recall-detail-dialog');modal.addEventListener('close',()=>modal.classList.remove('recall-detail-dialog'),{once:true});
- infoModalAction=null;recallModalCampaigns=[];recallModalSelectedCampaignNumbers=new Set();recallModalVehicle=vehicle;title.textContent='Vehicle Recall Notice';subtitle.textContent=vehicleFullName(vehicle);secondary.textContent='Close';primary.hidden=!canWrite();primary.textContent='Clear Recall Badge';
- body.innerHTML=`<div class="recall-detail-loading">${svg('refresh')}<span>Loading recall details…</span></div>`;modal.showModal();
+ infoModalAction=null;recallModalCampaigns=[];recallModalSelectedCampaignNumbers=new Set();recallModalVehicle=vehicle;title.textContent='Vehicle Recall Notice';subtitle.textContent=vehicleFullName(vehicle);secondary.textContent='Close';primary.hidden=true;primary.textContent='Clear Recall Badge';
+ body.innerHTML=`<div class="recall-detail-loading">${svg('refresh')}<span>Loading recall details…</span></div>`;if(!modal.open)modal.showModal();
  try{
-  const result=await authRequest('/api/recalls?limit=250'),recalls=(Array.isArray(result?.recalls)?result.recalls:[]).filter(item=>String(item.vehicleId||'')===vehicleId),verifyUrl=notices.find(item=>item.url)?.url||result?.summary?.providerUrl||'https://www.nhtsa.gov/recalls';
-  recallModalCampaigns=recalls;recallModalSelectedCampaignNumbers=new Set(recalls[0]?.campaignNumber?[String(recalls[0].campaignNumber)]:[]);
-  body.innerHTML=`<div class="recall-modal-summary"><span class="notification-item-icon ${notices.some(item=>item.tone==='red')?'red':'orange'}">${svg('warning')}</span><div><strong>${recalls.length} recall campaign${recalls.length===1?'':'s'} found</strong><p>Select one or more campaigns to print. A model-level match does not confirm whether this VIN still has an unrepaired recall.</p></div></div>${recalls.length?`<div class="recall-modal-list">${recalls.map((item,index)=>`<article class="${index===0?'selected':''}" data-campaign="${esc(String(item.campaignNumber||''))}" role="checkbox" aria-checked="${index===0?'true':'false'}" tabindex="0"><div class="recall-modal-item-head"><span>${esc(item.campaignNumber||'Recall')}</span><div class="recall-modal-item-badges"><span class="recall-selection-box" aria-hidden="true">${index===0?'✓':''}</span>${item.parkIt?'<b class="recall-park-badge">PARK IT</b>':''}</div></div><strong>${esc(item.component||'Safety recall')}</strong><p>${esc(item.summary||'No summary provided.')}</p>${item.consequence?`<dl><dt>Risk</dt><dd>${esc(item.consequence)}</dd></dl>`:''}${item.remedy?`<dl><dt>Remedy</dt><dd>${esc(item.remedy)}</dd></dl>`:''}</article>`).join('')}</div>`:'<div class="info-callout">GarageLog has an active recall alert, but no cached campaign details were returned. Run a recall check from Settings.</div>'}<div class="recall-modal-actions"><div class="recall-print-actions">${recalls.length?`<button type="button" class="secondary recall-print-selected">${svg('printer')} Print Selected <b class="recall-print-selected-count">${recalls.length?'(1)':''}</b></button><button type="button" class="secondary recall-print-all">${svg('printer')} Print All</button>`:''}</div><a class="secondary" href="${esc(verifyUrl)}" target="_blank" rel="noopener noreferrer">${svg('external')} Verify at NHTSA</a></div>`;
+  const result=await authRequest('/api/recalls?limit=250');cachedRecallCampaigns=Array.isArray(result?.recalls)?result.recalls:[];const recalls=cachedRecallCampaigns.filter(item=>String(item.vehicleId||'')===id),active=recalls.filter(item=>!item.isDismissed),verifyUrl=recalls.find(item=>item.sourceUrl)?.sourceUrl||result?.summary?.providerUrl||'https://www.nhtsa.gov/recalls';
+  recallModalCampaigns=recalls;recallModalSelectedCampaignNumbers=new Set(recalls[0]?.campaignNumber?[String(recalls[0].campaignNumber)]:[]);primary.hidden=!canWrite()||active.length===0;
+  body.innerHTML=`<div class="recall-modal-summary"><span class="notification-item-icon ${recalls.some(item=>item.parkIt)?'red':'orange'}">${svg('warning')}</span><div><strong>${recalls.length} recall campaign${recalls.length===1?'':'s'} found</strong><p>${active.length?`${active.length} currently shown by the Dashboard recall badge. `:'The Dashboard recall badge has been cleared for these campaigns. '}Select one or more campaigns to print or create follow-up tasks. A model-level match does not confirm whether this VIN still has an unrepaired recall.</p></div></div>${recalls.length?`<div class="recall-modal-list">${recalls.map((item,index)=>`<article class="${index===0?'selected':''}" data-campaign="${esc(String(item.campaignNumber||''))}" role="checkbox" aria-checked="${index===0?'true':'false'}" tabindex="0"><div class="recall-modal-item-head"><span>${esc(item.campaignNumber||'Recall')}</span><div class="recall-modal-item-badges"><span class="recall-selection-box" aria-hidden="true">${index===0?'✓':''}</span>${item.isDismissed?'<b class="recall-cleared-badge">Badge cleared</b>':''}${item.parkIt?'<b class="recall-park-badge">PARK IT</b>':''}</div></div><strong>${esc(item.component||'Safety recall')}</strong><p>${esc(item.summary||'No summary provided.')}</p>${item.consequence?`<dl><dt>Risk</dt><dd>${esc(item.consequence)}</dd></dl>`:''}${item.remedy?`<dl><dt>Remedy</dt><dd>${esc(item.remedy)}</dd></dl>`:''}</article>`).join('')}</div>`:'<div class="info-callout">No cached recall campaigns are available for this vehicle. Run a recall check from Settings.</div>'}${recalls.length&&canWrite()?`<div class="recall-followup-actions"><div><strong>Create follow-up tasks</strong><small>Add each selected campaign to Reminders. Maintenance is optional.</small></div><label><input id="recallAlsoMaintenance" type="checkbox"><span>Also add to Maintenance as urgent</span></label><button type="button" class="secondary recall-add-reminders">${svg('plus')} Add Selected to Reminders <b class="recall-add-selected-count">${recalls.length?'(1)':''}</b></button></div>`:''}<div class="recall-modal-actions"><div class="recall-print-actions">${recalls.length?`<button type="button" class="secondary recall-print-selected">${svg('printer')} Print Selected <b class="recall-print-selected-count">${recalls.length?'(1)':''}</b></button><button type="button" class="secondary recall-print-all">${svg('printer')} Print All</button>`:''}</div><a class="secondary" href="${esc(verifyUrl)}" target="_blank" rel="noopener noreferrer">${svg('external')} Verify at NHTSA</a></div>`;
   body.querySelectorAll('.recall-modal-list article[data-campaign]').forEach(card=>{card.addEventListener('click',()=>toggleRecallCampaign(card.dataset.campaign));card.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleRecallCampaign(card.dataset.campaign)}})});
-  body.querySelector('.recall-print-selected')?.addEventListener('click',printSelectedRecall);body.querySelector('.recall-print-all')?.addEventListener('click',printAllRecalls);
-  infoModalAction=window.clearDashboardRecallBadge;
+  body.querySelector('.recall-print-selected')?.addEventListener('click',printSelectedRecall);body.querySelector('.recall-print-all')?.addEventListener('click',printAllRecalls);body.querySelector('.recall-add-reminders')?.addEventListener('click',addSelectedRecallsToReminders);syncRecallCampaignSelection();
+  if(active.length)infoModalAction=window.clearDashboardRecallBadge;
  }catch(error){body.innerHTML=`<div class="info-callout">${esc(error.message||'Unable to load recall details.')}</div>`;primary.hidden=true}
 }
+window.openVehicleRecallDetails=async function(vehicleId){await openVehicleRecallDetailsInternal(vehicleId)}
+window.openDashboardRecallDetails=async function(){const vehicle=activeVehicle();if(!vehicle||!activeVehicleRecallCampaigns(vehicle.id).length)return;await openVehicleRecallDetailsInternal(vehicle.id)}
 window.clearDashboardRecallBadge=async function(){
- if(!canWrite())return;const ids=activeRecallNotifications().map(item=>String(item.id));if(!ids.length)return;const settings=notificationSettings();settings.dismissedIds=[...new Set([...(settings.dismissedIds||[]),...ids])].slice(-500);settings.readIds=(settings.readIds||[]).filter(id=>!ids.includes(id));try{await saveNow();document.getElementById('infoModal')?.close();render();toast('Recall badge cleared')}catch(error){toast(error.message||'Unable to clear recall badge')}
+ if(!canWrite()||!recallModalVehicle)return;const vehicleId=String(recallModalVehicle.id),campaigns=recallModalCampaigns.filter(item=>!item.isDismissed).map(item=>String(item.campaignNumber||'')).filter(Boolean);if(!campaigns.length)return;
+ try{const result=await authRequest('/api/recalls/dismiss',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({vehicleId,campaignNumbers:campaigns})});cachedRecallCampaigns=Array.isArray(result?.recalls)?result.recalls:cachedRecallCampaigns;const noticeIds=(serverNotifications||[]).filter(item=>String(item.category||'').toLowerCase()==='recall'&&String(item.vehicleId||'')===vehicleId).map(item=>String(item.id));if(noticeIds.length){const settings=notificationSettings();settings.dismissedIds=[...new Set([...(settings.dismissedIds||[]),...noticeIds])].slice(-500);settings.readIds=(settings.readIds||[]).filter(id=>!noticeIds.includes(String(id)));try{await saveNow()}catch(error){console.warn('Recall badge cleared, but notification-center dismissal could not be saved.',error)}}document.getElementById('infoModal')?.close();render();toast('Recall badge cleared. Recall details remain available in Settings.')}catch(error){toast(error.message||'Unable to clear recall badge')}
 }
+
 function dashboard(){
  const t=expenseTotals();
  const maintenance=activeMaintenance(),expenses=activeExpenses(),documents=activeDocuments(),allReminders=activeReminders();
@@ -1895,6 +1922,7 @@ function maintenanceProgressMeta(item){
 function maintenancePriorityMeta(item){
  const status=effectiveMaintenanceStatus(item),statusText=String(status||'').toLowerCase(),progress=maintenanceProgressMeta(item),mileage=mileageScheduleMeta(item);
  if(statusText==='completed')return{rank:5,percent:100,dueSort:Number.POSITIVE_INFINITY,status:'Completed',progress};
+ if(String(item?.priority||'').toLowerCase()==='urgent')return{rank:0,percent:0,dueSort:Number.NEGATIVE_INFINITY,status,progress};
  let percent=Number(progress?.percent);
  if(!Number.isFinite(percent))percent=100;
  let rank=3;
@@ -2305,7 +2333,7 @@ function reminders(){
  const allowed=['All','Due Soon','Overdue','Completed','Custom'],activeTab=allowed.includes(currentFilter)?currentFilter:'All';
  const reminderSearch=normalizedSearchQuery(current==='Reminders'?topSearchQuery:'');
  const items=all.filter(x=>(activeTab==='All'||statusKey(x.status)===activeTab)&&reminderMatchesTopSearch(x,reminderSearch));
- const sortScore=item=>{const date=parseReminderDate(item.due);if(date)return date.getTime();const mileage=parseMileageValue(item.due);if(mileage!==null)return Date.now()+Math.max(0,mileage-Number(state.mileage||0))*864000;return Number.MAX_SAFE_INTEGER};
+ const sortScore=item=>{if(String(item?.priority||'').toLowerCase()==='urgent')return Number.MIN_SAFE_INTEGER;const date=parseReminderDate(item.due);if(date)return date.getTime();const mileage=parseMileageValue(item.due);if(mileage!==null)return Date.now()+Math.max(0,mileage-Number(state.mileage||0))*864000;return Number.MAX_SAFE_INTEGER};
  const reminderRuleSortMeta=item=>{const rule=String(item?.rule||''),mileageBased=item?.triggerType==='mileage'||isMileageDue(rule)||isMileageDue(item?.due);if(mileageBased)return[0,Number(item?.repeatMiles??parseMileageValue(rule)??parseMileageValue(item?.due)),String(item?.name||'')];if(item?.triggerType==='date'){const date=parseReminderDate(item?.due);return[1,date?.getTime()??null,String(item?.name||'')]}const match=rule.replaceAll(',','').match(/(-?\d+(?:\.\d+)?)\s*(days?|weeks?|months?|years?)/i);if(match){const amount=Number(match[1]),unit=match[2].toLowerCase(),days=unit.startsWith('year')?amount*365.25:unit.startsWith('month')?amount*30.4375:unit.startsWith('week')?amount*7:amount;return[2,days,String(item?.name||'')]}return[2,null,rule,String(item?.name||'')]};
  const reminderDueSortMeta=item=>{const date=parseReminderDate(item?.due);if(date)return[0,date.getTime(),String(item?.name||'')];const mileage=isMileageDue(item?.due)?parseMileageValue(item?.due):null;if(mileage!==null)return[1,mileage,String(item?.name||'')];return[2,null,String(item?.name||'')]};
  const reminderSort=listSortState.reminders;
@@ -3295,7 +3323,7 @@ const infoModal=document.getElementById('infoModal');document.getElementById('in
 window.exportExpenses=function(){const rows=[['Date','Category','Vendor','Notes','Coverage','Covered Service Value','Amount Paid'],...activeExpenses().map(x=>[x.date,x.category,x.vendor,x.notes,expenseCoverageLabel(x)||'Out of pocket',x.coveredAmount??'',x.amount])];const csv=rows.map(r=>r.map(v=>`"${String(v??'').replaceAll('"','""')}"`).join(',')).join('\n');const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download='garagelog-expenses.csv';a.click();URL.revokeObjectURL(a.href)}
 function formatBytes(bytes){bytes=Number(bytes||0);if(bytes<1024)return`${bytes} B`;if(bytes<1024**2)return`${(bytes/1024).toFixed(1)} KB`;if(bytes<1024**3)return`${(bytes/1024**2).toFixed(1)} MB`;return`${(bytes/1024**3).toFixed(2)} GB`}
 
-window.setInterval(async()=>{if(!authSession?.authenticated||!state)return;const before=(serverNotifications||[]).map(item=>item.id).sort().join('|');await refreshServerNotifications();const after=(serverNotifications||[]).map(item=>item.id).sort().join('|');if(before!==after){if(current==='Dashboard')render();else renderNotificationCenter()}},300000);
+window.setInterval(async()=>{if(!authSession?.authenticated||!state)return;const beforeNotifications=(serverNotifications||[]).map(item=>item.id).sort().join('|'),beforeRecalls=(cachedRecallCampaigns||[]).map(item=>`${item.vehicleId}:${item.campaignNumber}:${item.isDismissed?'1':'0'}`).sort().join('|');await Promise.all([refreshServerNotifications(),refreshRecallCampaigns()]);const afterNotifications=(serverNotifications||[]).map(item=>item.id).sort().join('|'),afterRecalls=(cachedRecallCampaigns||[]).map(item=>`${item.vehicleId}:${item.campaignNumber}:${item.isDismissed?'1':'0'}`).sort().join('|');if(beforeNotifications!==afterNotifications||beforeRecalls!==afterRecalls){if(current==='Dashboard')render();else renderNotificationCenter()}},300000);
 
 bootstrapGarageLog();
 

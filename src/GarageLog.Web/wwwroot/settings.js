@@ -285,7 +285,7 @@ function settingsRecallResultsMarkup(){
       return `<div class="settings-recall-vehicle-row ${validated?'validated':'needs-match'}">
         <span class="settings-recall-vehicle-main"><strong>${esc(vehicle.vehicleName)}</strong><small>GarageLog: ${esc(vehicle.garageQuery||vehicle.vehicleName||'')}</small>${validated?`<em>${svg('check')} NHTSA: ${esc(vehicle.query||'')}</em>`:`<em class="needs-match">${svg('warning')} Validate the NHTSA vehicle identity before recall checks run.</em>`}</span>
         <span class="settings-recall-vehicle-result"><b>${number(count)}</b><small>campaign${count===1?'':'s'}</small><em class="${!validated?'setup':vehicle.lastError?'error':count>0?'attention':'clear'}">${esc(vehicleStatus)}</em></span>
-        ${isAdministrator()?`<button type="button" class="secondary compact-action settings-recall-match-button" onclick="openRecallVehicleMatch('${esc(vehicle.vehicleId)}')">${validated?'Change Match':'Match Vehicle'}</button>`:''}
+        <span class="settings-recall-vehicle-actions">${count>0?`<button type="button" class="secondary compact-action settings-recall-view-button" onclick="openVehicleRecallDetails('${esc(vehicle.vehicleId)}')">${svg('external')} View Recalls</button>`:''}${isAdministrator()?`<button type="button" class="secondary compact-action settings-recall-match-button" onclick="openRecallVehicleMatch('${esc(vehicle.vehicleId)}')">${validated?'Change Match':'Match Vehicle'}</button>`:''}</span>
       </div>`}).join('')}</div>`:`<div class="settings-recall-results-empty">No eligible vehicles are available for recall checks yet.</div>`}
   </section>`;
 }
@@ -338,7 +338,7 @@ async function saveRecallVehicleMatch(){
   if(!recallVehicleMatchState)return;const dialog=document.getElementById('recallVehicleMatchDialog'),button=dialog?.querySelector('.recall-match-save');
   const year=document.getElementById('recallMatchYear')?.value||'',make=document.getElementById('recallMatchMake')?.value||'',model=document.getElementById('recallMatchModel')?.value||'';
   if(button){button.disabled=true;button.textContent='Validating…'}
-  try{const result=await authRequest('/api/recalls/match',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({vehicleId:recallVehicleMatchState.vehicleId,year,make,model})});settingsNotificationData={settings:settingsNotificationConfig(),recall:result.summary};dialog?.close();recallVehicleMatchState=null;render();toast(`NHTSA match saved: ${year} ${make} ${model}`)}catch(error){toast(error.message||'Unable to save NHTSA vehicle match');if(button){button.disabled=false;button.textContent=recallVehicleMatchState.isValidated?'Save Match':'Confirm NHTSA Match'}}
+  try{const result=await authRequest('/api/recalls/match',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({vehicleId:recallVehicleMatchState.vehicleId,year,make,model})});settingsNotificationData={settings:settingsNotificationConfig(),recall:result.summary};await refreshRecallCampaigns().catch(()=>{});dialog?.close();recallVehicleMatchState=null;render();toast(`NHTSA match saved: ${year} ${make} ${model}`)}catch(error){toast(error.message||'Unable to save NHTSA vehicle match');if(button){button.disabled=false;button.textContent=recallVehicleMatchState.isValidated?'Save Match':'Confirm NHTSA Match'}}
 }
 
 function settingsNotificationsSection(){
@@ -425,7 +425,7 @@ window.updateServerNotificationSetting=async function(key,value){
   next.recallCheckSchedule=normalizeRecallSchedule(next.recallCheckSchedule);
   try{
     settingsNotificationData=await authRequest('/api/settings/notifications',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(next)});
-    await refreshServerNotifications().catch(()=>{});
+    await Promise.all([refreshServerNotifications().catch(()=>{}),refreshRecallCampaigns().catch(()=>{})]);
     render();
     toast(key.startsWith('recall')?'Recall monitoring settings saved':'Notification settings saved');
     if(key==='recallNotificationsEnabled'&&value){const unmatched=(settingsRecallSummary().vehicles||[]).find(vehicle=>!vehicle.isValidated);if(unmatched)setTimeout(()=>openRecallVehicleMatch(unmatched.vehicleId),80)}
