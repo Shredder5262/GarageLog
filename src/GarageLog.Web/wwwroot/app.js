@@ -1811,64 +1811,104 @@ function timelineEventDate(value){const date=parseRecordDate(value);return date&
 function timelineEventLabel(date){return date.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}
 function timelineEventKey(date){return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`}
 function timelineRelevantDate(record,...fallbacks){return String(record?.relevantDate||'').trim()||fallbacks.find(value=>String(value||'').trim())||null}
+const TIMELINE_MATCH_STOP_WORDS=new Set(['a','an','and','at','by','for','from','in','of','on','or','the','to','with','service','services','maintenance','completed','complete','record','records','receipt','invoice','document','documents','registration','insurance','renewal','state']);
+function timelineNormalizeMatchText(value){return String(value||'').toLowerCase().replace(/&/g,' and ').replace(/[^a-z0-9]+/g,' ').replace(/\s+/g,' ').trim()}
+function timelineMatchTokens(value){return [...new Set(timelineNormalizeMatchText(value).split(' ').filter(token=>token.length>1&&!TIMELINE_MATCH_STOP_WORDS.has(token)))]}
+function timelineTextSimilarity(left,right){
+ const a=timelineNormalizeMatchText(left),b=timelineNormalizeMatchText(right);if(!a||!b)return 0;if(a===b)return 1;if((a.length>=6&&b.includes(a))||(b.length>=6&&a.includes(b)))return .95;
+ const aTokens=timelineMatchTokens(a),bTokens=timelineMatchTokens(b);if(!aTokens.length||!bTokens.length)return 0;const bSet=new Set(bTokens),common=aTokens.filter(token=>bSet.has(token)).length;return common/Math.min(aTokens.length,bTokens.length)
+}
+function timelineDayDistance(left,right){return Math.abs(Number(left?.dateMs||0)-Number(right?.dateMs||0))/86400000}
+function timelineSameAmount(left,right){const a=Number(left?.amount),b=Number(right?.amount);return Number.isFinite(a)&&Number.isFinite(b)&&Math.abs(a-b)<.01}
+function timelineEventHasType(event,type){return (event?.recordTypes||[event?.primaryType]).includes(type)}
+function timelineEventPreference(event){return ({vehicle:90,expense:80,maintenance:70,obd:65,mileage:60,document:50,reminder:40})[event?.primaryType]||20}
+function mergeTimelineEvents(left,right){
+ const preferred=timelineEventPreference(right)>timelineEventPreference(left)?right:left,other=preferred===left?right:left,merged={...preferred};
+ merged.filters=[...new Set([...(left.filters||[]),...(right.filters||[])])];merged.recordTypes=[...new Set([...(left.recordTypes||[left.primaryType]),...(right.recordTypes||[right.primaryType])])];merged.recordIds=[...new Set([...(left.recordIds||[left.id]),...(right.recordIds||[right.id])])];
+ merged.documentIndex=Number.isInteger(preferred.documentIndex)?preferred.documentIndex:Number.isInteger(other.documentIndex)?other.documentIndex:undefined;merged.documentName=preferred.documentName||other.documentName;merged.matchText=[preferred.matchText,other.matchText].filter(Boolean).join(' ');merged.vendor=preferred.vendor||other.vendor;merged.amount=Number.isFinite(Number(preferred.amount))?Number(preferred.amount):other.amount;merged.mileageValue=Number.isFinite(Number(preferred.mileageValue))?Number(preferred.mileageValue):other.mileageValue;merged.isCorrection=Boolean(left.isCorrection||right.isCorrection);merged.mergedRecordCount=Number(left.mergedRecordCount||1)+Number(right.mergedRecordCount||1);return merged
+}
+function timelineExpenseDuplicate(left,right){
+ if(!timelineEventHasType(left,'expense')||!timelineEventHasType(right,'expense')||left.group!==right.group||timelineDayDistance(left,right)>.01||!timelineSameAmount(left,right))return false;
+ const leftVendor=timelineNormalizeMatchText(left.vendor),rightVendor=timelineNormalizeMatchText(right.vendor);if((leftVendor||rightVendor)&&leftVendor!==rightVendor)return false;
+ if(['registration','insurance'].includes(left.group))return true;
+ return timelineTextSimilarity(left.matchText,right.matchText)>=.55
+}
+function timelineEventsLikelySame(left,right){
+ if(!left||!right||left.id===right.id)return false;
+ if(timelineExpenseDuplicate(left,right))return true;
+ if(left.group!==right.group)return false;
+ const days=timelineDayDistance(left,right),leftVendor=timelineNormalizeMatchText(left.vendor),rightVendor=timelineNormalizeMatchText(right.vendor),similarity=timelineTextSimilarity(left.matchText,right.matchText);
+ if(left.group==='mileage')return days<.01&&Number.isFinite(Number(left.mileageValue))&&Number.isFinite(Number(right.mileageValue))&&Math.abs(Number(left.mileageValue)-Number(right.mileageValue))<.05;
+ if(left.group==='service'){
+   if(days>1.01)return false;
+   if(leftVendor&&rightVendor&&leftVendor!==rightVendor)return false;
+   const oneExpense=timelineEventHasType(left,'expense')||timelineEventHasType(right,'expense'),oneMaintenance=timelineEventHasType(left,'maintenance')||timelineEventHasType(right,'maintenance'),oneDocument=timelineEventHasType(left,'document')||timelineEventHasType(right,'document');
+   if(oneExpense&&oneMaintenance)return similarity>=.45;
+   if(oneDocument&&oneExpense)return similarity>=.55||(leftVendor&&rightVendor&&leftVendor===rightVendor&&similarity>=.35);
+   if(oneDocument&&oneMaintenance)return similarity>=.65;
+   return false
+ }
+ if(['registration','insurance'].includes(left.group)){
+   const bothExpenses=timelineEventHasType(left,'expense')&&timelineEventHasType(right,'expense');if(bothExpenses)return false;
+   const hasReminder=timelineEventHasType(left,'reminder')||timelineEventHasType(right,'reminder'),bothDocuments=timelineEventHasType(left,'document')&&timelineEventHasType(right,'document');
+   if(bothDocuments)return days<.01&&similarity>=.9;
+   return days<=(hasReminder?14.01:1.01)
+ }
+ if(left.group==='document'&&timelineEventHasType(left,'document')&&timelineEventHasType(right,'document'))return days<.01&&similarity>=.95;
+ return false
+}
+function applyTimelineMileageCorrections(events){
+ const sorted=[...events].sort((a,b)=>a.dateMs-b.dateMs),superseded=new Set();
+ for(let index=0;index<sorted.length;index++){
+   const correction=sorted[index],value=Number(correction.mileageValue);if(correction.group!=='mileage'||!correction.isCorrection||!Number.isFinite(value))continue;
+   for(let priorIndex=index-1;priorIndex>=0;priorIndex--){const prior=sorted[priorIndex],priorValue=Number(prior.mileageValue);if(prior.group!=='mileage'||superseded.has(prior.id)||!Number.isFinite(priorValue))continue;if(priorValue+0.05<value)break;superseded.add(prior.id)}
+ }
+ return events.filter(event=>!superseded.has(event.id))
+}
+function consolidateVehicleTimelineEvents(events){
+ const corrected=applyTimelineMileageCorrections(events),result=[];
+ for(const event of [...corrected].sort((a,b)=>a.dateMs-b.dateMs||String(a.title).localeCompare(String(b.title)))){
+   const matchIndex=result.findIndex(existing=>timelineEventsLikelySame(existing,event));
+   if(matchIndex>=0)result[matchIndex]=mergeTimelineEvents(result[matchIndex],event);else result.push(event)
+ }
+ return result.sort((a,b)=>a.dateMs-b.dateMs||String(a.title).localeCompare(String(b.title)))
+}
 function buildVehicleTimelineEvents(vehicle){
- const vehicleId=String(vehicle.id),events=[],push=(event)=>{const date=timelineEventDate(event.date);if(!date)return;events.push({...event,date,dateMs:date.getTime(),dateLabel:timelineEventLabel(date),filters:Array.isArray(event.filters)?event.filters:[event.kind]})};
- if(vehicle.acquiredDate)push({id:`vehicle-acquired-${vehicleId}`,date:vehicle.acquiredDate,kind:'vehicle',tone:'blue',icon:'car',eyebrow:'Vehicle',title:'Vehicle acquired',detail:vehicle.acquiredMileage===null||vehicle.acquiredMileage===undefined?'Added to GarageLog':`${number(vehicle.acquiredMileage)} mi at acquisition`,filters:['vehicle','mileage']});
- if(vehicle.archivedAt)push({id:`vehicle-archive-${vehicleId}`,date:vehicle.archivedAt,kind:'vehicle',tone:'slate',icon:'archive',eyebrow:'Vehicle',title:`Vehicle ${String(vehicle.lifecycleStatus||'archived').toLowerCase()}`,detail:'Lifecycle status changed in GarageLog',filters:['vehicle']});
+ const vehicleId=String(vehicle.id),events=[],push=(event)=>{const date=timelineEventDate(event.date);if(!date)return;events.push({...event,date,dateMs:date.getTime(),dateLabel:timelineEventLabel(date),filters:Array.isArray(event.filters)?event.filters:[event.kind],recordTypes:event.recordTypes||[event.primaryType||event.kind],recordIds:event.recordIds||[event.id]})};
+ if(vehicle.acquiredDate)push({id:`vehicle-acquired-${vehicleId}`,date:vehicle.acquiredDate,kind:'vehicle',primaryType:'vehicle',group:'vehicle',tone:'blue',icon:'car',eyebrow:'Vehicle',title:'Vehicle acquired',detail:vehicle.acquiredMileage===null||vehicle.acquiredMileage===undefined?'Added to GarageLog':`${number(vehicle.acquiredMileage)} mi at acquisition`,mileageValue:Number(vehicle.acquiredMileage),filters:['vehicle','mileage']});
+ if(vehicle.archivedAt)push({id:`vehicle-archive-${vehicleId}`,date:vehicle.archivedAt,kind:'vehicle',primaryType:'vehicle',group:'vehicle',tone:'slate',icon:'archive',eyebrow:'Vehicle',title:`Vehicle ${String(vehicle.lifecycleStatus||'archived').toLowerCase()}`,detail:'Lifecycle status changed in GarageLog',filters:['vehicle']});
  const expenses=(state.expenses||[]).filter(item=>String(item.vehicleId)===vehicleId);
  const expenseIds=new Set(expenses.map(item=>String(item.id||'')));
  for(const item of expenses){
    const linkedDocument=linkedDocumentForExpense(item),linkedDoc=linkedDocument?.doc,eventDate=timelineRelevantDate(linkedDoc,item.relevantDate,item.date,item.createdAt);
    const category=String(item.category||'Other'),fuel=category==='Fuel',service=['Maintenance','Repair','Parts'].includes(category),insurance=category==='Insurance',registration=category==='Registration',title=fuel?'Fuel fill-up':service?expenseServiceLabel(item):category,parts=[];
-   if(item.vendor)parts.push(String(item.vendor));
-   if(fuel&&Number(item.gallons)>0)parts.push(`${Number(item.gallons).toFixed(3).replace(/0+$/,'').replace(/\.$/,'')} gal`);
-   if(Number(item.amount)>=0)parts.push(money(item.amount));
-   if(item.coverageType&&String(item.coverageType)!=='None')parts.push(`${item.coverageType} covered`);
-   if(fuel&&Number(item.odometer)>0)parts.push(`${number(item.odometer)} mi`);
-   const filters=['expenses'];
-   if(linkedDoc)filters.push('documents');
-   if(fuel)filters.push('fuel');
-   if(service)filters.push('service');
-   if(insurance)filters.push('insurance');
-   if(registration)filters.push('registration');
-   push({id:`expense-${item.id||Math.random()}`,date:eventDate,kind:fuel?'fuel':service?'maintenance':'expense',tone:fuel?'orange':service?'green':insurance?'purple':registration?'teal':'purple',icon:fuel?'fuel':service?'wrench':insurance?'shield':registration?'calendar':'receipt',eyebrow:fuel?'Fuel':service?'Service':insurance?'Insurance':registration?'Registration':'Expense',title:title||category,detail:parts.filter(Boolean).join(' · ')||String(item.notes||''),filters:[...new Set(filters)],documentIndex:linkedDocument?.index,documentName:linkedDoc?.name});
+   if(item.vendor)parts.push(String(item.vendor));if(fuel&&Number(item.gallons)>0)parts.push(`${Number(item.gallons).toFixed(3).replace(/0+$/,'').replace(/\.$/,'')} gal`);if(Number(item.amount)>=0)parts.push(money(item.amount));if(item.coverageType&&String(item.coverageType)!=='None')parts.push(`${item.coverageType} covered`);if(fuel&&Number(item.odometer)>0)parts.push(`${number(item.odometer)} mi`);
+   const filters=['expenses'];if(linkedDoc)filters.push('documents');if(fuel)filters.push('fuel');if(service)filters.push('service');if(insurance)filters.push('insurance');if(registration)filters.push('registration');
+   push({id:`expense-${item.id||Math.random()}`,date:eventDate,kind:fuel?'fuel':service?'maintenance':'expense',primaryType:'expense',group:fuel?'fuel':service?'service':insurance?'insurance':registration?'registration':'expense',tone:fuel?'orange':service?'green':insurance?'purple':registration?'teal':'purple',icon:fuel?'fuel':service?'wrench':insurance?'shield':registration?'calendar':'receipt',eyebrow:fuel?'Fuel':service?'Service':insurance?'Insurance':registration?'Registration':'Expense',title:title||category,detail:parts.filter(Boolean).join(' · ')||String(item.notes||''),matchText:[title,item.notes,item.services,item.vendor,linkedDoc?.name,linkedDoc?.services].flat().filter(Boolean).join(' '),vendor:item.vendor||linkedDoc?.shop||'',amount:Number(item.amount),filters:[...new Set(filters)],documentIndex:linkedDocument?.index,documentName:linkedDoc?.name});
  }
  const appliedObd=(garageTimelineObdProposals||[]).filter(item=>String(item.vehicleId||'')===vehicleId&&String(item.effectiveStatus||item.storedStatus||'').toLowerCase()==='applied');
  const obdMileage=appliedObd.map(item=>Number(item.candidateOdometer)).filter(Number.isFinite);
- for(const item of appliedObd)push({id:`obd-${item.tripId}`,date:timelineRelevantDate(item,item.appliedUtc,item.endedAt),kind:'mileage',tone:'indigo',icon:'gauge',eyebrow:'Mileage',title:'Odometer updated',detail:Number(item.candidateOdometer)>0?`OBD · ${number(item.candidateOdometer)} mi${Number(item.distanceMiles)>0?` · ${Number(item.distanceMiles).toFixed(1)} mi trip`:''}`:'OBD telemetry trip applied',filters:['mileage']});
+ for(const item of appliedObd)push({id:`obd-${item.tripId}`,date:timelineRelevantDate(item,item.appliedUtc,item.endedAt),kind:'mileage',primaryType:'obd',group:'mileage',tone:'indigo',icon:'gauge',eyebrow:'Mileage',title:'Odometer updated',detail:Number(item.candidateOdometer)>0?`OBD · ${number(item.candidateOdometer)} mi${Number(item.distanceMiles)>0?` · ${Number(item.distanceMiles).toFixed(1)} mi trip`:''}`:'OBD telemetry trip applied',matchText:'OBD odometer update',mileageValue:Number(item.candidateOdometer),filters:['mileage']});
  for(const reading of vehicle.mileageHistory||[]){
-   const source=String(reading?.source||'Mileage update'),mileage=Number(reading?.mileage);
-   if(String(reading?.expenseId||'')&&expenseIds.has(String(reading.expenseId)))continue;
-   if(vehicle.acquiredDate&&source.toLowerCase().includes('acquired')&&timelineEventKey(timelineEventDate(reading.date)||new Date(0))===timelineEventKey(timelineEventDate(vehicle.acquiredDate)||new Date(1)))continue;
-   if(source.toLowerCase().includes('garagelog obd')&&obdMileage.some(value=>Math.abs(value-mileage)<.05))continue;
-   push({id:`mileage-${reading?.date||''}-${mileage}-${source}`,date:timelineRelevantDate(reading,reading?.date),kind:'mileage',tone:source.toLowerCase().includes('obd')?'indigo':'blue',icon:'gauge',eyebrow:'Mileage',title:Number.isFinite(mileage)?`${number(mileage)} mi`:'Mileage updated',detail:source.toLowerCase().includes('obd')?`OBD · ${source}`:source,filters:['mileage']});
+   const source=String(reading?.source||'Mileage update'),mileage=Number(reading?.mileage);if(String(reading?.expenseId||'')&&expenseIds.has(String(reading.expenseId)))continue;if(vehicle.acquiredDate&&source.toLowerCase().includes('acquired')&&timelineEventKey(timelineEventDate(reading.date)||new Date(0))===timelineEventKey(timelineEventDate(vehicle.acquiredDate)||new Date(1)))continue;if(source.toLowerCase().includes('garagelog obd')&&obdMileage.some(value=>Math.abs(value-mileage)<.05))continue;
+   push({id:`mileage-${reading?.date||''}-${mileage}-${source}`,date:timelineRelevantDate(reading,reading?.date),kind:'mileage',primaryType:'mileage',group:'mileage',tone:source.toLowerCase().includes('obd')?'indigo':'blue',icon:'gauge',eyebrow:'Mileage',title:Number.isFinite(mileage)?`${number(mileage)} mi`:'Mileage updated',detail:source.toLowerCase().includes('obd')?`OBD · ${source}`:source,matchText:source,mileageValue:mileage,isCorrection:Boolean(reading?.correction)||source.toLowerCase().includes('correction'),filters:['mileage']});
  }
  for(let documentIndex=0;documentIndex<(state.documents||[]).length;documentIndex++){
-   const item=state.documents[documentIndex];if(String(item.vehicleId)!==vehicleId)continue;
-   const linkedExpense=linkedExpenseForDocument(item);
-   if(linkedExpense&&String(linkedExpense.vehicleId||'')===vehicleId)continue;
-   const category=normalizeDocumentCategory(item.category),filters=['documents'],eventDate=timelineRelevantDate(item,item.relevantDate,item.startsOn,item.date,item.addedAt);
-   if(category==='Insurance')filters.push('insurance');
-   if(category==='Registration')filters.push('registration');
-   push({id:`document-${item.id}`,date:eventDate,kind:'document',tone:category==='Insurance'?'purple':category==='Registration'?'teal':'slate',icon:category==='Insurance'?'shield':category==='Registration'?'calendar':'file',eyebrow:category==='Insurance'?'Insurance':category==='Registration'?'Registration':'Document',title:item.name||'Document added',detail:[category,item.shop].filter(Boolean).join(' · ')||'Added to vehicle records',filters,documentIndex,documentName:item.name})
+   const item=state.documents[documentIndex];if(String(item.vehicleId)!==vehicleId)continue;const linkedExpense=linkedExpenseForDocument(item);if(linkedExpense&&String(linkedExpense.vehicleId||'')===vehicleId)continue;
+   const category=normalizeDocumentCategory(item.category),filters=['documents'],eventDate=timelineRelevantDate(item,item.relevantDate,item.startsOn,item.date,item.addedAt),group=category==='Insurance'?'insurance':category==='Registration'?'registration':category==='Receipts'?'service':'document';if(category==='Insurance')filters.push('insurance');if(category==='Registration')filters.push('registration');
+   push({id:`document-${item.id}`,date:eventDate,kind:'document',primaryType:'document',group,tone:category==='Insurance'?'purple':category==='Registration'?'teal':'slate',icon:category==='Insurance'?'shield':category==='Registration'?'calendar':'file',eyebrow:category==='Insurance'?'Insurance':category==='Registration'?'Registration':'Document',title:item.name||'Document added',detail:[category,item.shop].filter(Boolean).join(' · ')||'Added to vehicle records',matchText:[item.name,item.shop,item.services,item.tags].flat().filter(Boolean).join(' '),vendor:item.shop||'',filters,documentIndex,documentName:item.name});
  }
  const reminders=(state.reminders||[]).filter(item=>String(item.vehicleId)===vehicleId);
  for(const item of reminders){
-   if(String(item.status||'').toLowerCase()!=='completed')continue;
-   const maintenanceReminder=Boolean(item.maintenanceId||(state.maintenance||[]).some(entry=>String(entry.vehicleId)===vehicleId&&String(entry.reminderId||'')===String(item.id||''))),name=String(item.name||''),lowerName=name.toLowerCase(),filters=['reminders'];
-   if(maintenanceReminder)filters.push('service');
-   if(lowerName.includes('insurance'))filters.push('insurance');
-   if(lowerName.includes('registration')||lowerName.includes('license')||lowerName.includes('title'))filters.push('registration');
-   push({id:`reminder-${item.id}`,date:timelineRelevantDate(item,item.completedAt,item.updatedAt,item.due),kind:'reminder',tone:filters.includes('insurance')?'purple':filters.includes('registration')?'teal':'teal',icon:filters.includes('insurance')?'shield':filters.includes('registration')?'calendar':'check',eyebrow:filters.includes('insurance')?'Insurance':filters.includes('registration')?'Registration':'Reminder',title:item.name||'Reminder completed',detail:item.rule||item.due||'Completed',filters})
+   if(String(item.status||'').toLowerCase()!=='completed')continue;const maintenanceReminder=Boolean(item.maintenanceId||(state.maintenance||[]).some(entry=>String(entry.vehicleId)===vehicleId&&String(entry.reminderId||'')===String(item.id||''))),name=String(item.name||''),lowerName=name.toLowerCase(),filters=['reminders'];if(maintenanceReminder)filters.push('service');if(lowerName.includes('insurance'))filters.push('insurance');if(lowerName.includes('registration')||lowerName.includes('license')||lowerName.includes('title'))filters.push('registration');const group=filters.includes('insurance')?'insurance':filters.includes('registration')?'registration':filters.includes('service')?'service':'reminder';
+   push({id:`reminder-${item.id}`,date:timelineRelevantDate(item,item.completedAt,item.updatedAt,item.due),kind:'reminder',primaryType:'reminder',group,tone:filters.includes('insurance')?'purple':filters.includes('registration')?'teal':'teal',icon:filters.includes('insurance')?'shield':filters.includes('registration')?'calendar':'check',eyebrow:filters.includes('insurance')?'Insurance':filters.includes('registration')?'Registration':'Reminder',title:item.name||'Reminder completed',detail:item.rule||item.due||'Completed',matchText:[item.name,item.rule].filter(Boolean).join(' '),filters});
  }
  const remindersById=new Map(reminders.map(item=>[String(item.id||''),item]));
  for(const item of state.maintenance||[]){
-   if(String(item.vehicleId)!==vehicleId||String(item.status||'').toLowerCase()!=='completed')continue;
-   const linked=remindersById.get(String(item.reminderId||'')),eventDate=timelineRelevantDate(item,linked?.relevantDate,item.completedAt,linked?.completedAt,item.updatedAt);
-   if(!eventDate||(linked&&String(linked.status||'').toLowerCase()==='completed'))continue;
-   push({id:`maintenance-${item.id}`,date:eventDate,kind:'maintenance',tone:'green',icon:'wrench',eyebrow:'Maintenance',title:item.name||'Maintenance completed',detail:item.interval||item.due||'Completed service',filters:['service']});
+   if(String(item.vehicleId)!==vehicleId||String(item.status||'').toLowerCase()!=='completed')continue;const linked=remindersById.get(String(item.reminderId||'')),eventDate=timelineRelevantDate(item,linked?.relevantDate,item.completedAt,linked?.completedAt,item.updatedAt);if(!eventDate||(linked&&String(linked.status||'').toLowerCase()==='completed'))continue;
+   push({id:`maintenance-${item.id}`,date:eventDate,kind:'maintenance',primaryType:'maintenance',group:'service',tone:'green',icon:'wrench',eyebrow:'Maintenance',title:item.name||'Maintenance completed',detail:item.interval||item.due||'Completed service',matchText:[item.name,item.notes,item.interval].filter(Boolean).join(' '),vendor:item.vendor||item.shop||'',filters:['service']});
  }
- return events.sort((a,b)=>a.dateMs-b.dateMs||String(a.title).localeCompare(String(b.title)))
+ return consolidateVehicleTimelineEvents(events)
 }
 function timelineFilterDefinitions(events){
  const definitions=[['all','All','clock'],['fuel','Fuel','fuel'],['service','Service History','wrench'],['insurance','Insurance','shield'],['registration','Registration','calendar'],['mileage','Mileage','gauge'],['expenses','Expenses','receipt'],['documents','Documents','file'],['reminders','Reminders','check']];
