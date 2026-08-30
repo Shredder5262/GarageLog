@@ -3305,8 +3305,8 @@
 .document-vehicle-cell>span{font-weight:500;color:#0f172a}
 .document-vehicle-cell>small{font-size:11px;color:#64748b;font-weight:500}
 .documents-table .document-tag-list{max-width:185px}
-.document-coverage-date{display:flex;align-items:center;gap:12px;min-width:0;white-space:nowrap}
-.document-coverage-date>span{display:inline-flex;gap:5px;align-items:baseline;white-space:nowrap}
+.document-coverage-date{display:grid;gap:3px;min-width:0;white-space:normal}
+.document-coverage-date>span{display:flex;gap:5px;align-items:baseline;white-space:nowrap}
 
 @media(max-width:760px){
   .document-expense-link-controls{grid-template-columns:1fr}

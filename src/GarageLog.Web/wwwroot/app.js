@@ -547,16 +547,18 @@ function parseSizeText(value){
 function parseDocumentDate(value){
  if(!value)return null;
  if(value instanceof Date&&!Number.isNaN(value.getTime()))return value;
- const direct=new Date(value);
- if(!Number.isNaN(direct.getTime()))return direct;
- const match=String(value).match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2})\s*(AM|PM))?$/i);
+ const raw=String(value).trim();
+ let match=raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+ if(match)return new Date(Number(match[1]),Number(match[2])-1,Number(match[3]),12);
+ match=raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2})\s*(AM|PM))?$/i);
  if(match){
-   let hour=Number(match[4]||0),minute=Number(match[5]||0);const meridiem=String(match[6]||'').toUpperCase();
+   let hour=Number(match[4]||12),minute=Number(match[5]||0);const meridiem=String(match[6]||'').toUpperCase();
    if(meridiem==='PM'&&hour<12)hour+=12;
    if(meridiem==='AM'&&hour===12)hour=0;
    return new Date(Number(match[3]),Number(match[1])-1,Number(match[2]),hour,minute)
  }
- return null
+ const direct=new Date(raw);
+ return Number.isNaN(direct.getTime())?null:direct
 }
 function normalizeDocumentCategory(value='Other'){
  const key=String(value||'Other').trim().toLowerCase();
