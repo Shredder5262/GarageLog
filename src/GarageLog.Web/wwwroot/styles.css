@@ -3280,3 +3280,36 @@
 .recall-followup-actions label{display:flex;align-items:center;gap:7px;font-size:10px;font-weight:750;color:#334155;white-space:nowrap}.recall-followup-actions label input{width:16px;height:16px}
 .recall-followup-actions .secondary{display:inline-flex;align-items:center;gap:6px;min-height:36px;padding:8px 11px;font-size:10.5px;white-space:nowrap}.recall-followup-actions svg{width:13px;height:13px}.recall-add-selected-count{font-size:10px}
 @media(max-width:760px){.recall-followup-actions{grid-template-columns:1fr}.recall-followup-actions label{white-space:normal}.recall-followup-actions .secondary{justify-content:center}}
+
+/* GarageLog document detail/table compact layout */
+.modal-fields > .document-linked-expense-edit.full{grid-column:1/-1}
+.document-linked-expense-edit{
+  margin:2px 0 0;
+  padding:16px 0 0;
+  border:0;
+  border-top:1px solid var(--border);
+  border-radius:0;
+  background:transparent;
+  overflow:visible;
+}
+.document-expense-link-head{margin-bottom:10px}
+.document-expense-link-head p{margin:4px 0 0;color:var(--muted);font-size:11px;line-height:1.4}
+.document-expense-link-controls{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:end}
+.document-expense-link-controls label{min-width:0}
+.document-expense-link-controls select{width:100%;min-width:0}
+.document-expense-link-controls .secondary{white-space:nowrap;min-height:39px}
+
+.documents-table .document-file-cell{min-width:205px}
+.documents-table th:nth-child(3),.documents-table td:nth-child(3){white-space:normal}
+.document-vehicle-cell{display:grid;gap:2px;min-width:150px;max-width:190px;white-space:normal;line-height:1.25}
+.document-vehicle-cell>span{font-weight:500;color:#0f172a}
+.document-vehicle-cell>small{font-size:11px;color:#64748b;font-weight:500}
+.documents-table .document-tag-list{max-width:185px}
+.document-coverage-date{display:flex;align-items:center;gap:12px;min-width:0;white-space:nowrap}
+.document-coverage-date>span{display:inline-flex;gap:5px;align-items:baseline;white-space:nowrap}
+
+@media(max-width:760px){
+  .document-expense-link-controls{grid-template-columns:1fr}
+  .document-expense-link-controls .secondary{justify-self:start}
+  .modal-fields > .document-linked-expense-edit.full{grid-column:auto}
+}
