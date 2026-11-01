@@ -37,6 +37,20 @@
    if(hasLife&&remaining<=UPCOMING_PERCENT)return 'upcoming';
    return 'scheduled';
  }
+ // Keep active schedule health mutually exclusive; historical completions are
+ // counted by maintenance schedule, not combined with expenses (which can overlap).
+ function summarize(records=[]){
+   return records.reduce((counts,record)=>{
+     const bucket=record?.bucket;
+     if(bucket==='overdue')counts.overdue++;
+     else if(bucket==='due')counts.due++;
+     else if(bucket==='upcoming')counts.upcoming++;
+     else if(bucket==='scheduled')counts.track++;
+     if(bucket==='completed'||record?.hasHistory)counts.completed++;
+     counts.total++;
+     return counts;
+   },{overdue:0,due:0,upcoming:0,track:0,completed:0,total:0});
+ }
  function matchesFilter(bucket,filter,{custom=false,hasHistory=false}={}){
    if(filter==='All')return true;
    if(filter==='Needs Attention')return bucket==='overdue'||bucket==='due';
@@ -45,5 +59,5 @@
    if(filter==='Custom')return custom;
    return false;
  }
- return{classify,matchesFilter,WARNING_PERCENT,UPCOMING_PERCENT,UPCOMING_DAYS};
+ return{classify,matchesFilter,summarize,WARNING_PERCENT,UPCOMING_PERCENT,UPCOMING_DAYS};
 });

@@ -1415,13 +1415,11 @@ function expenseTotals(vehicleId=state.activeVehicleId){
  }
  return{total,yearly,maintenance,fuel,trackedMiles,trackedCost,costPerMile,trackingStart,trackingEnd,readingCount:readings.length}
 }
-function maintenanceCounts(vehicleId=state.activeVehicleId){return recordsFor('maintenance',vehicleId).reduce((counts,item)=>{
- const bucket=maintenanceBucket(item);
- if(bucket==='overdue')counts.overdue++;
- else if(bucket==='due')counts.due++;
- else if(bucket!=='completed')counts.track++;
- return counts;
-},{overdue:0,due:0,track:0})}
+function maintenanceCounts(vehicleId=state.activeVehicleId,items=recordsFor('maintenance',vehicleId)){
+ return GarageLogMaintenanceFilters.summarize(items.map(item=>({
+   bucket:maintenanceBucket(item),hasHistory:GarageLogMaintenanceCycles.completionHistory(item).length>0
+ })));
+}
 
 function parseMileageValue(value){const match=String(value||'').replaceAll(',','').match(/(-?\d+(?:\.\d+)?)/);return match?Number(match[1]):null}
 function maintenanceIntervalMiles(item){
@@ -2063,10 +2061,6 @@ function nextMaintenanceForVehicle(vehicleId){
  return recordsFor('maintenance',vehicleId).filter(item=>effectiveMaintenanceStatus(item)!=='Completed').sort(compareMaintenancePriority)[0]||null;
 }
 function maintenanceSeverity(item){return maintenancePriorityMeta(item).rank}
-function completedServiceCount(){
- return activeMaintenance().reduce((count,item)=>count+GarageLogMaintenanceCycles.completionHistory(item).length+(item.status==='Completed'&&!GarageLogMaintenanceCycles.completionHistory(item).length?1:0),0)+
-   activeExpenses().filter(x=>['Maintenance','Repair','Parts'].includes(x.category)).length
-}
 function localServiceDate(){
  const date=new Date();return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`
 }
@@ -2125,11 +2119,11 @@ function maintenanceRowActions(index){
 }
 function maintenance(){
  const maintenance=activeMaintenance();
- const mc=maintenanceCounts();
- const completed=completedServiceCount();
- const onTrack=mc.track;
  const maintenanceSearch=normalizedSearchQuery(current==='Maintenance'?topSearchQuery:'');
  const matchingSearch=maintenance.filter(item=>maintenanceMatchesTopSearch(item,maintenanceSearch));
+ const mc=maintenanceCounts(state.activeVehicleId,matchingSearch);
+ const completed=mc.completed;
+ const onTrack=mc.track;
  const countFilter=filter=>matchingSearch.filter(item=>maintenanceMatchesFilter(item,filter)).length;
  const filterTabs=[
    {key:'All',label:'All Items',count:matchingSearch.length},
@@ -2191,12 +2185,12 @@ function maintenance(){
    </div>
    <aside class="maintenance-side">
      <section class="card maintenance-summary-card">
-       <div class="maintenance-card-heading"><h3>Maintenance Summary</h3><span title="Based on the active vehicle">${svg('info')}</span></div>
+       <div class="maintenance-card-heading"><h3>Maintenance Summary</h3><span title="Counts are for the active vehicle and current search. On Track excludes Upcoming. Completed counts schedules with recorded service history, not expenses.">${svg('info')}</span></div>
        <div class="maintenance-summary-grid">
          <div><strong class="status-bad">${mc.overdue}</strong><b>Overdue</b><small>Needs immediate attention</small></div>
          <div><strong class="status-warn">${mc.due}</strong><b>Due Soon</b><small>Approaching its interval</small></div>
-         <div><strong class="summary-blue">${onTrack}</strong><b>On Track</b><small>Current schedule is healthy</small></div>
-         <div><strong class="status-good">${completed}</strong><b>Completed</b><small>Recorded service history</small></div>
+         <div><strong class="summary-blue">${onTrack}</strong><b>On Track</b><small>Outside upcoming window · ${mc.upcoming} upcoming</small></div>
+         <div><strong class="status-good">${completed}</strong><b>Completed</b><small>Schedules with service history</small></div>
        </div>
      </section>
      <section class="card maintenance-mileage-card">

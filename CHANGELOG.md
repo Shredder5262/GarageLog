@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.29 - Maintenance summary consistency
+
+- Align Maintenance Summary with the same active schedule classifications used by the filter tabs.
+- Exclude Upcoming from On Track so the summary separates eight healthy schedules from one approaching maintenance window in the reported example.
+- Count Completed as maintenance schedules with service history, matching the Completed tab; avoid adding maintenance expenses to this total because one service may have both records.
+- Display the Upcoming count in the On Track card subtitle without expanding the sidebar grid.
+- Respect the current maintenance search when computing summary counts and clarify summary meanings in its info tooltip.
+- Preserve recurring service due-mileage calculations, service history, and fuel-style remaining-life gauges.
+- Add summary consistency regression tests.
+
+
 ## 0.8.28 - Maintenance filters and badge accuracy
 
 - Use the same maintenance classification for the summary, tab counts, sorted priorities, and filtered rows.

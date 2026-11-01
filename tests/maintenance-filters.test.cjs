@@ -1,7 +1,7 @@
 // Run with: node --test tests/maintenance-filters.test.cjs
 const test=require('node:test');
 const assert=require('node:assert/strict');
-const {classify,matchesFilter,UPCOMING_DAYS,UPCOMING_PERCENT}=require('../src/GarageLog.Web/wwwroot/maintenance-filters.js');
+const {classify,matchesFilter,summarize,UPCOMING_DAYS,UPCOMING_PERCENT}=require('../src/GarageLog.Web/wwwroot/maintenance-filters.js');
 const TODAY=new Date(2026,10,1,12).getTime();
 const check=(dueDate,completed,total)=>({status:'Upcoming',dueDate,isChecklist:true,percent:completed/total*100,hasProgress:true,now:TODAY});
 const miles=(remaining,interval,beforeStart=false)=>({status:'Upcoming',percent:remaining/interval*100,hasProgress:true,mileage:{percent:remaining/interval*100,beforeStart},now:TODAY});
@@ -61,4 +61,35 @@ test('filtered search badges can use the same matching logic as the displayed ro
  const badgeCount=search.filter(x=>matchesFilter(x.bucket,'Upcoming')).length;
  assert.equal(visible.length,badgeCount);
  assert.equal(badgeCount,1);
+});
+
+
+test('maintenance summary has exclusive active buckets and counts completed schedules only once',()=>{
+ const rows=[
+  {bucket:'scheduled',hasHistory:true},
+  {bucket:'scheduled',hasHistory:true},
+  {bucket:'scheduled',hasHistory:true},
+  {bucket:'scheduled',hasHistory:true},
+  {bucket:'scheduled'}, {bucket:'scheduled'}, {bucket:'scheduled'}, {bucket:'scheduled'},
+  {bucket:'upcoming'}
+ ];
+ assert.deepEqual(summarize(rows),{overdue:0,due:0,upcoming:1,track:8,completed:4,total:9});
+ assert.equal(summarize(rows).track+summarize(rows).upcoming+summarize(rows).due+summarize(rows).overdue,9);
+ // Adding related expenses must not change service-schedule counts.
+ assert.equal(summarize(rows).completed,4);
+});
+
+test('summary respects filtered items and retains historical completions in other active buckets',()=>{
+ const rows=[
+  {name:'Oil',bucket:'scheduled',hasHistory:true},
+  {name:'Brake',bucket:'upcoming',hasHistory:false},
+  {name:'Wipers',bucket:'due',hasHistory:false},
+  {name:'Emergency repair',bucket:'overdue',hasHistory:true},
+  {name:'One-off repair',bucket:'completed',hasHistory:false}
+ ];
+ const summary=summarize(rows);
+ assert.deepEqual(summary,{overdue:1,due:1,upcoming:1,track:1,completed:3,total:5});
+ const filtered=summarize(rows.filter(x=>x.name.toLowerCase().includes('oil')));
+ assert.deepEqual(filtered,{overdue:0,due:0,upcoming:0,track:1,completed:1,total:1});
+ assert.equal(summary.completed,rows.filter(row=>matchesFilter(row.bucket,'Completed',{hasHistory:row.hasHistory})).length);
 });
