@@ -307,6 +307,17 @@ function normalizeState(){
  state.savedReports=state.savedReports.filter(item=>item&&item.id&&item.templateId).map(item=>({...item,vehicleId:String(item.vehicleId||preferredId),ownerUserId:String(item.ownerUserId||''),customRange:item.customRange&&typeof item.customRange==='object'?item.customRange:{start:'',end:''}}));
  state.maintenance=state.maintenance.filter(x=>String(x?.name||'').trim().toLowerCase()!=='test');
  for(const collection of ['expenses','maintenance','documents','reminders'])state[collection]=state[collection].map(item=>{const x={...item};if(!x.id){x.id=makeRecordId(collection.slice(0,-1));migrated=true}const linkedVehicleId=String(x.vehicleId||'');if(!linkedVehicleId||!validIds.has(linkedVehicleId)){x.vehicleId=preferredId;migrated=true}else if(x.vehicleId!==linkedVehicleId){x.vehicleId=linkedVehicleId;migrated=true}return x});
+ // Upgrade legacy completed mileage services once, retaining their prior schedule and completion evidence.
+ // For old entries without a service-mileage field, the stored due mileage is a provisional
+ // completion mileage. The user can correct it from Maintenance > Service history.
+ for(let i=0;i<state.maintenance.length;i++){
+   const item=state.maintenance[i],reminder=state.reminders.find(r=>r.id===item.reminderId||r.maintenanceId===item.id);
+   const upgraded=GarageLogMaintenanceCycles.migrateLegacy(item,reminder);
+   if(!upgraded)continue;
+   state.maintenance[i]=upgraded.item;
+   if(reminder&&upgraded.reminder)state.reminders[state.reminders.indexOf(reminder)]=upgraded.reminder;
+   migrated=true;
+ }
  state.documents=state.documents.map(doc=>({...doc,originalName:doc.originalName||(fileExtension(doc.name)?doc.name:(doc.storedName||doc.name)),tags:Array.isArray(doc.tags)?doc.tags:documentTags(doc),folderId:doc.folderId||null,ocrText:doc.ocrText||'',ocrStatus:doc.ocrStatus||'not-indexed',linkedExpenseId:doc.linkedExpenseId||null}));
  state.setupStatus='complete';state.stateSchemaVersion=2;activateVehicle(state.activeVehicleId,false);state.vehicle={...activeVehicle()};return migrated
 }
@@ -1426,7 +1437,16 @@ function mileageScheduleMeta(item){
  const label=remaining<0?`Overdue by ${number(Math.abs(remaining))} mi`:beforeStart?`${number(serviceMileage-currentMileage)} mi until interval begins`:`${number(Math.max(0,remaining))} mi remaining`;
  return{dueMileage,interval,currentMileage,serviceMileage,remaining,lead,percent,status,beforeStart,label,detail:`${number(currentMileage)} / ${number(dueMileage)} mi`}
 }
-function effectiveMaintenanceStatus(item){return mileageScheduleMeta(item)?.status||item?.status||'On track'}
+function effectiveMaintenanceStatus(item){
+ const mileage=mileageScheduleMeta(item);if(mileage)return mileage.status;
+ const schedule=GarageLogMaintenanceCycles.interval(item,state.reminders.find(r=>r.id===item?.reminderId));
+ if(schedule?.kind==='date'&&GarageLogMaintenanceCycles.isoDate(item?.due)&&String(item?.status||'')!=='Completed'){
+   const now=Date.now(),due=parseScheduleDate(item.due),days=Math.ceil((due.getTime()-now)/86400000);
+   const lead=Math.max(0,Number(item.leadTime??30));
+   return days<0?'Overdue':days<=lead?'Due Soon':'Upcoming';
+ }
+ return item?.status||'On track'
+}
 function effectiveReminderStatus(item){return mileageScheduleMeta(item)?.status||item?.status||'Upcoming'}
 function remainingLifeGauge(percent,status){
  const value=Math.min(100,Math.max(0,Number(percent||0))),overdue=/overdue/i.test(String(status||''));
@@ -1905,8 +1925,22 @@ function buildVehicleTimelineEvents(vehicle){
  }
  const remindersById=new Map(reminders.map(item=>[String(item.id||''),item]));
  for(const item of state.maintenance||[]){
-   if(String(item.vehicleId)!==vehicleId||String(item.status||'').toLowerCase()!=='completed')continue;const linked=remindersById.get(String(item.reminderId||'')),eventDate=timelineRelevantDate(item,linked?.relevantDate,item.completedAt,linked?.completedAt,item.updatedAt);if(!eventDate||(linked&&String(linked.status||'').toLowerCase()==='completed'))continue;
-   push({id:`maintenance-${item.id}`,date:eventDate,kind:'maintenance',primaryType:'maintenance',group:'service',tone:'green',icon:'wrench',eyebrow:'Maintenance',title:item.name||'Maintenance completed',detail:item.interval||item.due||'Completed service',matchText:[item.name,item.notes,item.interval].filter(Boolean).join(' '),vendor:item.vendor||item.shop||'',filters:['service']});
+   if(String(item.vehicleId)!==vehicleId)continue;
+   const history=GarageLogMaintenanceCycles.completionHistory(item);
+   if(history.length){
+     for(const completion of history){
+       if(!completion.date)continue;
+       // An existing service expense on this day already represents the visit in the timeline.
+       // Do not add separate maintenance events for the same visit and inflate the timeline.
+       if(expenses.some(expense=>['Maintenance','Repair','Parts'].includes(expense.category)&&String(expense.date||'').slice(0,10)===completion.date))continue;
+       push({id:`maintenance-${item.id}-${completion.id}`,date:completion.date,kind:'maintenance',primaryType:'maintenance',group:'service',tone:'green',icon:'wrench',eyebrow:'Maintenance',title:item.name||'Maintenance completed',detail:completion.mileage===null||completion.mileage===undefined?'Service completed':`${number(completion.mileage)} mi`,matchText:[item.name,item.notes,item.interval].filter(Boolean).join(' '),filters:['service']});
+     }
+     continue;
+   }
+   if(String(item.status||'').toLowerCase()!=='completed')continue;
+   const linked=remindersById.get(String(item.reminderId||'')),eventDate=timelineRelevantDate(item,linked?.relevantDate,item.completedAt,linked?.completedAt,item.updatedAt);
+   if(!eventDate||(linked&&String(linked.status||'').toLowerCase()==='completed'))continue;
+   push({id:`maintenance-${item.id}`,date:eventDate,kind:'maintenance',primaryType:'maintenance',group:'service',tone:'green',icon:'wrench',eyebrow:'Maintenance',title:item.name||'Maintenance completed',detail:item.interval||item.due||'Completed service',filters:['service']});
  }
  return consolidateVehicleTimelineEvents(events)
 }
@@ -2016,9 +2050,49 @@ function nextMaintenanceForVehicle(vehicleId){
 }
 function maintenanceSeverity(item){return maintenancePriorityMeta(item).rank}
 function completedServiceCount(){
- return activeMaintenance().filter(x=>x.status==='Completed').length+
+ return activeMaintenance().reduce((count,item)=>count+GarageLogMaintenanceCycles.completionHistory(item).length+(item.status==='Completed'&&!GarageLogMaintenanceCycles.completionHistory(item).length?1:0),0)+
    activeExpenses().filter(x=>['Maintenance','Repair','Parts'].includes(x.category)).length
 }
+function localServiceDate(){
+ const date=new Date();return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`
+}
+window.openMaintenanceCompletion=function(index,correction=false){
+ if(!canWrite()){toast('Read-only accounts cannot update maintenance');return}
+ const item=state.maintenance[index];if(!item)return;
+ const recent=GarageLogMaintenanceCycles.completionHistory(item).at(-1),schedule=GarageLogMaintenanceCycles.interval(item,state.reminders.find(r=>r.id===item.reminderId));
+ if(correction&&!recent)return;
+ const dialog=ensureDynamicDialog('maintenanceCompletionDialog','maintenance-completion-dialog');
+ const mileage=schedule?.kind==='mileage';
+ const initialMileage=correction?recent?.mileage:recordVehicleMileage(item);
+ dialog.innerHTML=`<div class="modal-header"><div><h3>${correction?'Correct last service':'Complete maintenance'}</h3><p>${esc(item.name)} · ${esc(item.interval||'One-time')}</p></div><button type="button" class="icon-btn maintenance-completion-close">${svg('close')}</button></div>
+ <form class="maintenance-completion-form"><p>${correction?'Correct the recorded service details and recalculate the next interval.':'Record when the work was actually done. GarageLog will start the next interval from these values.'}</p>
+ <label>Service date<input type="date" name="serviceDate" value="${esc(correction?recent?.date||'':localServiceDate())}" ${correction&&!recent?.date?'':'required'}></label>
+ ${mileage?`<label>Odometer at service<input type="number" name="serviceMileage" min="0" step="1" required value="${esc(initialMileage??'')}"><small>Use the mileage at the service, not necessarily the current odometer.</small></label>`:''}
+ ${correction&&recent?.legacy?'<p class="wizard-field-help">This older completion used the previously stored due mileage as an estimate. Verify or correct it here.</p>':''}
+ <div class="modal-actions"><button type="button" class="secondary maintenance-completion-cancel">Cancel</button><button type="submit" class="primary">${correction?'Save correction':'Record service & set next due'}</button></div></form>`;
+ dialog.querySelector('.maintenance-completion-close').onclick=()=>dialog.close();dialog.querySelector('.maintenance-completion-cancel').onclick=()=>dialog.close();
+ const form=dialog.querySelector('form');form.onsubmit=async event=>{
+   event.preventDefault();if(form.dataset.saving)return;form.dataset.saving='yes';const submit=form.querySelector('button[type="submit"]');submit.disabled=true;
+   try{
+     const data=new FormData(form),linked=state.reminders.find(r=>r.id===item.reminderId||r.maintenanceId===item.id),date=String(data.get('serviceDate')||'').trim();
+     // Imported records without a known date may retain that uncertainty when mileage is corrected.
+     if(!date&&!correction)throw new Error('Choose the service date.');
+     const result=GarageLogMaintenanceCycles.recordCompletion(item,linked,{date,mileage:mileage?data.get('serviceMileage'):null,id:makeRecordId('completion'),correction});
+     state.maintenance[index]=result.item;
+     if(linked&&result.reminder)state.reminders[state.reminders.indexOf(linked)]=result.reminder;
+     await saveNow();dialog.close();toast(correction?'Service record corrected':result.recurring?'Service recorded; next interval scheduled':'Maintenance completed');render();
+   }catch(error){toast(error.message||'Unable to record maintenance')}finally{form.dataset.saving='';submit.disabled=false}
+ };
+ dialog.showModal()
+};
+window.openMaintenanceHistory=function(index){
+ const item=state.maintenance[index];if(!item)return;
+ const entries=GarageLogMaintenanceCycles.completionHistory(item),dialog=ensureDynamicDialog('maintenanceHistoryDialog','maintenance-history-dialog');
+ dialog.innerHTML=`<div class="modal-header"><div><h3>Service history</h3><p>${esc(item.name)}</p></div><button type="button" class="icon-btn maintenance-history-close">${svg('close')}</button></div><div class="maintenance-history-body">${entries.length?entries.slice().reverse().map(entry=>`<div class="maintenance-history-entry"><strong>${esc(entry.date||'Date not recorded')}</strong><span>${entry.mileage!==null&&entry.mileage!==undefined?`${number(entry.mileage)} mi`:'Time-based service'}</span>${entry.legacy?'<small>Imported from previous completed schedule — verify if needed</small>':''}</div>`).join(''):'<p>No completed services recorded.</p>'}</div><div class="modal-actions"><button type="button" class="secondary maintenance-history-close-bottom">Close</button>${entries.length&&canWrite()?'<button type="button" class="primary maintenance-history-correct">Correct last service</button>':''}</div>`;
+ dialog.querySelectorAll('.maintenance-history-close,.maintenance-history-close-bottom').forEach(button=>button.onclick=()=>dialog.close());
+ const correct=dialog.querySelector('.maintenance-history-correct');if(correct)correct.onclick=()=>{dialog.close();openMaintenanceCompletion(index,true)};
+ dialog.showModal()
+};
 function maintenanceRowActions(index){
  const item=state.maintenance[index],hasChecklist=Array.isArray(item?.checklist)&&item.checklist.length>0;
  return `<div class="maintenance-actions">
@@ -2027,6 +2101,8 @@ function maintenanceRowActions(index){
      <summary aria-label="More actions">${svg('chevronDown')}</summary>
      <div class="maintenance-more-menu">
        ${hasChecklist?`<button type="button" onclick="openRecordChecklist('maintenance',${index})">${svg('check')} View checklist</button>`:''}
+       <button type="button" onclick="openMaintenanceCompletion(${index})">${svg('check')} Mark service completed</button>
+       ${GarageLogMaintenanceCycles.completionHistory(item).length?`<button type="button" onclick="openMaintenanceHistory(${index})">${svg('calendar')} Service history</button>`:''}
        <button type="button" onclick="editRecord('maintenance',${index})">${svg('edit')} Edit item</button>
        <button type="button" class="delete" onclick="deleteRecord('maintenance',${index})">${svg('trash')} Delete item</button>
      </div>
@@ -2043,7 +2119,7 @@ function maintenance(){
    {key:'All',label:'All Items',count:maintenance.length},
    {key:'Needs Attention',label:'Needs Attention',count:mc.overdue+mc.due},
    {key:'Upcoming',label:'Upcoming',count:standardUpcoming},
-   {key:'Completed',label:'Completed',count:maintenance.filter(m=>effectiveMaintenanceStatus(m)==='Completed').length},
+   {key:'Completed',label:'Completed',count:maintenance.filter(m=>effectiveMaintenanceStatus(m)==='Completed'||GarageLogMaintenanceCycles.completionHistory(m).length).length},
    {key:'Custom',label:'Custom',count:maintenance.filter(isCustomMaintenance).length}
  ];
  const maintenanceSearch=normalizedSearchQuery(current==='Maintenance'?topSearchQuery:'');
@@ -2051,7 +2127,7 @@ function maintenance(){
    currentFilter==='All'||
    (currentFilter==='Needs Attention'&&(effectiveMaintenanceStatus(m)==='Overdue'||String(effectiveMaintenanceStatus(m)).toLowerCase().includes('soon')))||
    (currentFilter==='Upcoming'&&effectiveMaintenanceStatus(m)!=='Overdue'&&effectiveMaintenanceStatus(m)!=='Completed'&&!String(effectiveMaintenanceStatus(m)).toLowerCase().includes('soon'))||
-   (currentFilter==='Completed'&&effectiveMaintenanceStatus(m)==='Completed')||
+   (currentFilter==='Completed'&&(effectiveMaintenanceStatus(m)==='Completed'||GarageLogMaintenanceCycles.completionHistory(m).length>0))||
    (currentFilter==='Custom'&&isCustomMaintenance(m))
  )&&maintenanceMatchesTopSearch(m,maintenanceSearch));
  const maintenanceIntervalSortMeta=item=>{const text=String(item?.interval||item?.rule||'').toLowerCase(),value=parseMileageValue(text);if(/\bmi\b|mile/.test(text))return[0,value,String(item?.name||'')];const match=text.replaceAll(',','').match(/(-?\d+(?:\.\d+)?)\s*(days?|weeks?|months?|years?)/i);if(match){const amount=Number(match[1]),unit=match[2].toLowerCase(),days=unit.startsWith('year')?amount*365.25:unit.startsWith('month')?amount*30.4375:unit.startsWith('week')?amount*7:amount;return[1,days,String(item?.name||'')]}return[2,null,text,String(item?.name||'')]};
@@ -2095,6 +2171,7 @@ function maintenance(){
            <div class="maintenance-due-cell">
              <strong class="${effectiveStatus==='Overdue'?'status-bad':''}">${esc(m.due||'Not scheduled')}</strong>
              <small class="${gauge.tone==='gauge-danger'?'status-bad':gauge.tone==='gauge-warning'?'status-warn':'status-good'}">${esc(dueSub)}</small>
+             ${GarageLogMaintenanceCycles.completionHistory(m).length?`<small>${GarageLogMaintenanceCycles.completionHistory(m).length} completed service${GarageLogMaintenanceCycles.completionHistory(m).length===1?'':'s'} recorded</small>`:''}
            </div>
            ${maintenanceRowActions(i)}
          </article>`;
@@ -2875,7 +2952,7 @@ const vehicleItem=type==='vehicle-add'?blankVehicle:(item||state.vehicle);
 const configs={
  mileage:{title:'Update Mileage',subtitle:`Add an odometer reading for ${vehicleFullName()}.`,fields:[['Mileage','number',state.mileage,'half'],['Source','select','Manual update','half',['Manual update','OBD sync','Service record','Fuel entry']]]},
  expense:{title:isEdit?'Edit Expense':'Add Expense',subtitle:`Included in ownership reports for ${vehicleFullName()}.`,fields:[['Date','date',item?.date||new Date().toISOString().slice(0,10),'half'],['Category','select',item?.category||'Maintenance','half',['Maintenance','Repair','Fuel','Parts','Insurance','Registration','Other']],['Vendor','text',item?.vendor||'','half'],['Amount','number',item?.amount||'','half'],['Notes','text',item?.notes||'','full']]},
- service:{title:isEdit?'Edit Maintenance':'Add Maintenance',subtitle:`Track service intervals for ${vehicleFullName()}.`,fields:[['Service Name','text',item?.name||'','full'],['Interval','text',item?.interval||'7,500 mi','half'],['Interval Value','number',item?.max||7500,'half'],['Progress','number',item?.progress||0,'half'],['Next Due','text',item?.due||'','half'],['Status','select',item?.status||'On track','half',['On track','Due soon','Overdue','Completed']]]},
+ service:{title:isEdit?'Edit Maintenance':'Add Maintenance',subtitle:`Track service intervals for ${vehicleFullName()}. Marking Completed records a service and advances recurring intervals.`,fields:[['Service Name','text',item?.name||'','full'],['Interval','text',item?.interval||'7,500 mi','half'],['Interval Value','number',item?.max||7500,'half'],['Progress','number',item?.progress||0,'half'],['Next Due','text',item?.due||'','half'],['Status','select',item?.status||'On track','half',['On track','Due soon','Overdue','Completed']],['Service Date','date',localServiceDate(),'half'],['Service Mileage','number',recordVehicleMileage(item),'half']]},
  reminder:{title:isEdit?'Edit Reminder':'New Reminder',subtitle:`Stored for ${vehicleFullName()}.`,fields:[['Reminder Name','text',item?.name||'','full'],['Rule','text',item?.rule||'','half'],['Due','text',item?.due||'','half'],['Status','select',item?.status||'Upcoming','half',['Upcoming','Due Soon','Overdue','Completed']]]},
  vehicle:{title:'Edit Vehicle',subtitle:'Update vehicle details, status, and odometer.',fields:[['Vehicle Status','select',vehicleItem.lifecycleStatus||'Active','full',['Active','Sold','Decommissioned']],['Vehicle Type','select',vehicleItem.type||inferVehicleType(vehicleItem),'half',['Car','Truck','Motorcycle','Trailer']],['Powertrain','select',vehicleItem.powertrain||'Gasoline / Internal Combustion','half',VEHICLE_POWERTRAINS],['Year','text',vehicleItem.year,'half'],['Make','text',vehicleItem.make,'half'],['Model','text',vehicleItem.model,'half'],['Trim','text',vehicleItem.trim,'half'],['VIN','text',vehicleItem.vin,'full'],['Engine','text',vehicleItem.engine,'half'],['Transmission','text',vehicleItem.transmission,'half'],['Drivetrain','text',vehicleItem.drivetrain,'half'],['Color','text',vehicleItem.color,'half'],['Purchase / Acquired Date','date',vehicleItem.acquiredDate||'','half'],['Mileage at Acquisition','number',vehicleItem.acquiredMileage??'','half'],['Current Mileage','number',vehicleItem.mileage,'half']]},
   'vehicle-add':{title:'Add Vehicle',subtitle:'Add a car, truck, motorcycle, or trailer with type-specific details and recommended maintenance.',fields:[]},
@@ -3247,7 +3324,7 @@ async function saveReminderWizard(){
  await saveNow();document.getElementById('reminderWizard').close();toast(maintenanceMode?'Maintenance schedule and reminder created':existing?'Reminder rule updated':s.createMaintenance?'Reminder and maintenance item created':'Reminder rule created');render()
 }
 window.advanceReminderTimeline=function(){const count=activeReminders().filter(item=>String(item.status||'').toLowerCase()!=='completed').length;if(count<=4)return;reminderTimelineOffset=(reminderTimelineOffset+1)%count;render()};
-window.markReminderComplete=async function(index){const reminder=state.reminders[index];if(!reminder)return;reminder.status='Completed';reminder.completedAt=new Date().toISOString();if(reminder.maintenanceId){const linked=state.maintenance.find(item=>item.id===reminder.maintenanceId);if(linked)linked.status='Completed'}await saveNow();toast('Reminder marked completed');render()};
+window.markReminderComplete=async function(index){const reminder=state.reminders[index];if(!reminder)return;const linkedIndex=state.maintenance.findIndex(item=>item.id===reminder.maintenanceId||item.reminderId===reminder.id);if(linkedIndex>=0){openMaintenanceCompletion(linkedIndex);return}reminder.status='Completed';reminder.completedAt=new Date().toISOString();await saveNow();toast('Reminder marked completed');render()};
 window.duplicateReminderRule=async function(index){const source=state.reminders[index];if(!source)return;const copy={...source,id:makeRecordId('reminder'),name:`${source.name} Copy`,status:'Upcoming',createdAt:new Date().toISOString(),updatedAt:null,maintenanceId:null,checklist:checklistItemsFromRecord(source).map(item=>({...item,completed:false}))};delete copy.maintenanceId;state.reminders.unshift(copy);await saveNow();toast('Reminder rule duplicated');render()};
 window.deleteReminderRule=async function(index){const reminder=state.reminders[index];if(!reminder)return;state.maintenance=state.maintenance.filter(item=>item.id!==reminder.maintenanceId&&item.reminderId!==reminder.id);state.reminders.splice(index,1);await saveNow();toast('Reminder and associated checklist removed');render()};
 
@@ -3267,8 +3344,9 @@ function exportGarageRecords(form){
 window.printServiceHistory=function(){
  const vehicle=activeVehicle(),services=activeExpenses().filter(x=>['Maintenance','Repair','Parts'].includes(x.category)).sort((a,b)=>String(b.date).localeCompare(String(a.date))),schedule=activeMaintenance(),total=services.reduce((sum,x)=>sum+Number(x.amount||0),0),popup=openCenteredWindow('','garageLogServiceHistory',1040,780);if(!popup){toast('Allow pop-ups to open the printable service report');return}
  const serviceRows=services.map(x=>`<tr><td>${esc(x.date)}</td><td>${esc(x.notes||x.category)}</td><td>${esc(x.vendor||'—')}</td><td>${esc(x.category)}</td><td>${esc(expenseCoverageSummary(x)||'Out of pocket')}</td><td class="amount">${money(x.amount)}</td></tr>`).join('')||'<tr><td colspan="6">No completed service expenses recorded.</td></tr>';
- const scheduleRows=schedule.map(x=>`<tr><td>${esc(x.name)}</td><td>${esc(x.interval||'—')}</td><td>${esc(x.due||'—')}</td><td>${esc(x.status||'—')}</td></tr>`).join('')||'<tr><td colspan="4">No maintenance schedule recorded.</td></tr>';
- popup.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>GarageLog Service History - ${esc(vehicleFullName())}</title><link rel="icon" type="image/png" href="${APP_FAVICON_PATH}"><style>body{font-family:Segoe UI,Arial,sans-serif;color:#172033;margin:36px;font-size:12px}.report-actions{position:sticky;top:0;display:flex;justify-content:flex-end;gap:8px;padding:10px 0 16px;background:#fff;z-index:2}.report-actions button{border:1px solid #cfd7e3;background:#fff;border-radius:7px;padding:8px 12px;cursor:pointer}.report-actions .primary{background:#2563eb;color:#fff;border-color:#2563eb}header{display:grid;grid-template-columns:minmax(0,1fr) 190px auto;gap:22px;align-items:center;border-bottom:3px solid #2563eb;padding-bottom:18px;margin-bottom:22px}h1{margin:0;font-size:26px}.report-vehicle-photo{height:100px;display:grid;place-items:center;border:1px solid #dde3ec;border-radius:10px;background:#f8fafc;overflow:hidden}.report-vehicle-photo img{display:block;max-width:100%;max-height:96px;object-fit:contain}.generated{text-align:right;color:#667085}@media(max-width:760px){header{grid-template-columns:1fr}.generated{text-align:left}}h2{font-size:16px;margin:28px 0 10px}.brand{color:#2563eb;font-weight:800;font-size:18px}.meta{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;background:#f6f8fb;border:1px solid #dde3ec;border-radius:10px;padding:14px}.meta span{display:block;color:#667085;font-size:10px}.meta strong{display:block;margin-top:4px}table{width:100%;border-collapse:collapse}th,td{border-bottom:1px solid #dde3ec;padding:10px;text-align:left}th{background:#f6f8fb;color:#475467;font-size:10px;text-transform:uppercase}.amount{text-align:right;font-weight:700}.total{display:flex;justify-content:flex-end;margin-top:12px;font-size:15px}.footer{margin-top:30px;padding-top:12px;border-top:1px solid #dde3ec;color:#667085;font-size:10px}@page{margin:.55in}@media print{body{margin:0}.report-actions{display:none}}</style></head><body><div class="report-actions"><button onclick="window.close()">Close</button><button onclick="window.opener?.saveReportSetupForTemplate?.('maintenance-history')">Save Report Setup</button><button class="primary" onclick="window.print()">Print / Save as PDF</button></div><header><div><div class="brand">GarageLog</div><h1>Service History</h1><p>${esc(vehicleFullName())}</p></div><div class="report-vehicle-photo"><img src="${vehicleImageUrl(vehicle)}" alt="${esc(vehicleFullName(vehicle))}" onerror="this.onerror=null;this.src='${vehicleDefaultImageUrl(vehicle)}'"></div><div class="generated">Generated ${new Date().toLocaleString()}</div></header><section class="meta"><div><span>Mileage</span><strong>${number(vehicle.mileage)} mi</strong></div><div><span>VIN</span><strong>${esc(vehicle.vin||'Not entered')}</strong></div><div><span>Engine</span><strong>${esc(vehicle.engine||'Not entered')}</strong></div><div><span>Drivetrain</span><strong>${esc(vehicle.drivetrain||'Not entered')}</strong></div></section><h2>Completed Service & Repairs</h2><table><thead><tr><th>Date</th><th>Service</th><th>Shop</th><th>Category</th><th>Coverage</th><th class="amount">Paid</th></tr></thead><tbody>${serviceRows}</tbody></table><div class="total"><strong>Total out-of-pocket service cost: ${money(total)}</strong></div><h2>Maintenance Schedule</h2><table><thead><tr><th>Item</th><th>Interval</th><th>Next Due</th><th>Status</th></tr></thead><tbody>${scheduleRows}</tbody></table><div class="footer">Private local report generated by GarageLog. Review vehicle manufacturer recommendations before relying on maintenance intervals.</div></body></html>`);popup.document.close();popup.focus();
+ const maintenanceCompletedRows=schedule.flatMap(item=>GarageLogMaintenanceCycles.completionHistory(item).map(entry=>`<tr><td>${esc(entry.date||'Not recorded')}</td><td>${esc(item.name)}</td><td>${entry.mileage!==null&&entry.mileage!==undefined?`${number(entry.mileage)} mi`:'—'}</td><td>${entry.legacy?'Imported prior completion':'Recorded completion'}</td></tr>`)).join('')||'<tr><td colspan="4">No separate maintenance completions recorded.</td></tr>';
+ const scheduleRows=schedule.map(x=>`<tr><td>${esc(x.name)}</td><td>${esc(x.interval||'—')}</td><td>${esc(x.due||'—')}</td><td>${esc(effectiveMaintenanceStatus(x)||'—')}</td></tr>`).join('')||'<tr><td colspan="4">No maintenance schedule recorded.</td></tr>';
+ popup.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>GarageLog Service History - ${esc(vehicleFullName())}</title><link rel="icon" type="image/png" href="${APP_FAVICON_PATH}"><style>body{font-family:Segoe UI,Arial,sans-serif;color:#172033;margin:36px;font-size:12px}.report-actions{position:sticky;top:0;display:flex;justify-content:flex-end;gap:8px;padding:10px 0 16px;background:#fff;z-index:2}.report-actions button{border:1px solid #cfd7e3;background:#fff;border-radius:7px;padding:8px 12px;cursor:pointer}.report-actions .primary{background:#2563eb;color:#fff;border-color:#2563eb}header{display:grid;grid-template-columns:minmax(0,1fr) 190px auto;gap:22px;align-items:center;border-bottom:3px solid #2563eb;padding-bottom:18px;margin-bottom:22px}h1{margin:0;font-size:26px}.report-vehicle-photo{height:100px;display:grid;place-items:center;border:1px solid #dde3ec;border-radius:10px;background:#f8fafc;overflow:hidden}.report-vehicle-photo img{display:block;max-width:100%;max-height:96px;object-fit:contain}.generated{text-align:right;color:#667085}@media(max-width:760px){header{grid-template-columns:1fr}.generated{text-align:left}}h2{font-size:16px;margin:28px 0 10px}.brand{color:#2563eb;font-weight:800;font-size:18px}.meta{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;background:#f6f8fb;border:1px solid #dde3ec;border-radius:10px;padding:14px}.meta span{display:block;color:#667085;font-size:10px}.meta strong{display:block;margin-top:4px}table{width:100%;border-collapse:collapse}th,td{border-bottom:1px solid #dde3ec;padding:10px;text-align:left}th{background:#f6f8fb;color:#475467;font-size:10px;text-transform:uppercase}.amount{text-align:right;font-weight:700}.total{display:flex;justify-content:flex-end;margin-top:12px;font-size:15px}.footer{margin-top:30px;padding-top:12px;border-top:1px solid #dde3ec;color:#667085;font-size:10px}@page{margin:.55in}@media print{body{margin:0}.report-actions{display:none}}</style></head><body><div class="report-actions"><button onclick="window.close()">Close</button><button onclick="window.opener?.saveReportSetupForTemplate?.('maintenance-history')">Save Report Setup</button><button class="primary" onclick="window.print()">Print / Save as PDF</button></div><header><div><div class="brand">GarageLog</div><h1>Service History</h1><p>${esc(vehicleFullName())}</p></div><div class="report-vehicle-photo"><img src="${vehicleImageUrl(vehicle)}" alt="${esc(vehicleFullName(vehicle))}" onerror="this.onerror=null;this.src='${vehicleDefaultImageUrl(vehicle)}'"></div><div class="generated">Generated ${new Date().toLocaleString()}</div></header><section class="meta"><div><span>Mileage</span><strong>${number(vehicle.mileage)} mi</strong></div><div><span>VIN</span><strong>${esc(vehicle.vin||'Not entered')}</strong></div><div><span>Engine</span><strong>${esc(vehicle.engine||'Not entered')}</strong></div><div><span>Drivetrain</span><strong>${esc(vehicle.drivetrain||'Not entered')}</strong></div></section><h2>Completed Service & Repairs</h2><table><thead><tr><th>Date</th><th>Service</th><th>Shop</th><th>Category</th><th>Coverage</th><th class="amount">Paid</th></tr></thead><tbody>${serviceRows}</tbody></table><div class="total"><strong>Total out-of-pocket service cost: ${money(total)}</strong></div><h2>Recorded Maintenance Completions</h2><table><thead><tr><th>Date</th><th>Service</th><th>Mileage</th><th>Record</th></tr></thead><tbody>${maintenanceCompletedRows}</tbody></table><h2>Maintenance Schedule</h2><table><thead><tr><th>Item</th><th>Interval</th><th>Next Due</th><th>Status</th></tr></thead><tbody>${scheduleRows}</tbody></table><div class="footer">Private local report generated by GarageLog. Review vehicle manufacturer recommendations before relying on maintenance intervals.</div></body></html>`);popup.document.close();popup.focus();
 }
 
 
@@ -3308,7 +3386,16 @@ document.getElementById('modalForm').addEventListener('submit',async e=>{if(e.su
    if(String(vehicle.id)===String(state.activeVehicleId)){state.vehicle=vehicle;state.mileage=Number(vehicle.mileage||0);state.mileageHistory=vehicle.mileageHistory}
    if(index!==null)state.expenses[index]=x;else{if(sourceDocument){x.linkedDocumentId=sourceDocument.id;x.linkedDocumentStoredName=sourceDocument.storedName;x.source='document-link';sourceDocument.linkedExpenseId=x.id;sourceDocument.relevantDate=sourceDocument.relevantDate||expenseDate;sourceDocument.updatedAt=now;if(normalizeDocumentCategory(sourceDocument.category)==='Receipts'){sourceDocument.shop=sourceDocument.shop||String(x.vendor||'');if(!Array.isArray(sourceDocument.services)||!sourceDocument.services.length)sourceDocument.services=normalizeServiceValues(x.notes||'')}}state.expenses.unshift(x)}pendingExpenseDocumentContext=null
  }
- else if(type==='service'){const existing=index!==null?state.maintenance[index]:null;const x={...existing,vehicleId:existing?.vehicleId||state.activeVehicleId,name:fd.get('Service Name'),interval:fd.get('Interval'),progress:Number(fd.get('Progress')),max:Number(fd.get('Interval Value')),due:fd.get('Next Due'),status:fd.get('Status')};index!==null?state.maintenance[index]=x:state.maintenance.unshift(x)}
+ else if(type==='service'){
+   const existing=index!==null?state.maintenance[index]:null;
+   let x={...existing,id:existing?.id||makeRecordId('maintenance'),vehicleId:existing?.vehicleId||state.activeVehicleId,name:fd.get('Service Name'),interval:fd.get('Interval'),progress:Number(fd.get('Progress')),max:Number(fd.get('Interval Value')),due:fd.get('Next Due'),status:fd.get('Status')};
+   if(x.status==='Completed'&&existing?.status!=='Completed'){
+     const linked=state.reminders.find(r=>r.id===x.reminderId||r.maintenanceId===x.id);
+     const result=GarageLogMaintenanceCycles.recordCompletion(x,linked,{date:fd.get('Service Date'),mileage:fd.get('Service Mileage'),id:makeRecordId('completion')});
+     x=result.item;if(linked&&result.reminder)state.reminders[state.reminders.indexOf(linked)]=result.reminder;
+   }
+   if(index!==null)state.maintenance[index]=x;else state.maintenance.unshift(x)
+ }
  else if(type==='reminder'){const existing=index!==null?state.reminders[index]:null;const x={...existing,vehicleId:existing?.vehicleId||state.activeVehicleId,name:fd.get('Reminder Name'),rule:fd.get('Rule'),due:fd.get('Due'),status:fd.get('Status')};index!==null?state.reminders[index]=x:state.reminders.unshift(x)}
  else if(type==='vehicle'||type==='vehicle-add'){
     const existing=type==='vehicle'?state.vehicles[index]:null;
