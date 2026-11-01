@@ -1415,7 +1415,13 @@ function expenseTotals(vehicleId=state.activeVehicleId){
  }
  return{total,yearly,maintenance,fuel,trackedMiles,trackedCost,costPerMile,trackingStart,trackingEnd,readingCount:readings.length}
 }
-function maintenanceCounts(vehicleId=state.activeVehicleId){return recordsFor('maintenance',vehicleId).reduce((a,m)=>{const priority=maintenancePriorityMeta(m),status=effectiveMaintenanceStatus(m);if(priority.rank===0)a.overdue++;else if(priority.rank===1)a.due++;else if(status!=='Completed')a.track++;return a},{overdue:0,due:0,track:0})}
+function maintenanceCounts(vehicleId=state.activeVehicleId){return recordsFor('maintenance',vehicleId).reduce((counts,item)=>{
+ const bucket=maintenanceBucket(item);
+ if(bucket==='overdue')counts.overdue++;
+ else if(bucket==='due')counts.due++;
+ else if(bucket!=='completed')counts.track++;
+ return counts;
+},{overdue:0,due:0,track:0})}
 
 function parseMileageValue(value){const match=String(value||'').replaceAll(',','').match(/(-?\d+(?:\.\d+)?)/);return match?Number(match[1]):null}
 function maintenanceIntervalMiles(item){
@@ -2020,21 +2026,29 @@ function maintenanceProgressMeta(item){
  const label=remaining<0?`Overdue by ${number(Math.abs(remaining))}${suffix}`:`${number(Math.max(0,remaining))}${suffix} remaining`;
  return{percent,label,detail:`${number(progress)} / ${number(max)}${suffix}`,checklist:false,status:item?.status};
 }
+function maintenanceBucket(item){
+ const mileage=mileageScheduleMeta(item),progress=maintenanceProgressMeta(item);
+ const date=/^\d{4}-\d{2}-\d{2}$/.test(String(item?.due||''))?String(item.due):null;
+ return GarageLogMaintenanceFilters.classify({
+   status:effectiveMaintenanceStatus(item),priority:item?.priority,percent:progress?.percent,
+   hasProgress:Boolean(progress?.detail),isChecklist:Boolean(progress?.checklist),
+   mileage:mileage?{percent:mileage.percent,beforeStart:mileage.beforeStart}:null,dueDate:date
+ });
+}
+function maintenanceMatchesFilter(item,filter){
+ return GarageLogMaintenanceFilters.matchesFilter(maintenanceBucket(item),filter,{
+   custom:isCustomMaintenance(item),hasHistory:GarageLogMaintenanceCycles.completionHistory(item).length>0
+ });
+}
 function maintenancePriorityMeta(item){
- const status=effectiveMaintenanceStatus(item),statusText=String(status||'').toLowerCase(),progress=maintenanceProgressMeta(item),mileage=mileageScheduleMeta(item);
- if(statusText==='completed')return{rank:5,percent:100,dueSort:Number.POSITIVE_INFINITY,status:'Completed',progress};
- if(String(item?.priority||'').toLowerCase()==='urgent')return{rank:0,percent:0,dueSort:Number.NEGATIVE_INFINITY,status,progress};
+ const status=effectiveMaintenanceStatus(item),progress=maintenanceProgressMeta(item),mileage=mileageScheduleMeta(item),bucket=maintenanceBucket(item);
+ const urgent=String(item?.priority||'').toLowerCase()==='urgent'&&bucket!=='completed';
  let percent=Number(progress?.percent);
  if(!Number.isFinite(percent))percent=100;
- let rank=3;
- if(statusText.includes('overdue'))rank=0;
- else if(statusText==='due'||statusText.includes('soon')||percent<=MAINTENANCE_WARNING_PERCENT)rank=1;
- else if(percent<=40)rank=2;
- else if(!progress?.detail&&!item?.due&&!item?.interval)rank=4;
+ const rank=urgent||bucket==='overdue'?0:bucket==='due'?1:bucket==='upcoming'?2:bucket==='completed'?5:3;
  let dueSort=Number.POSITIVE_INFINITY;
- if(mileage){
-   dueSort=mileage.remaining;
- }else{
+ if(mileage)dueSort=mileage.remaining;
+ else{
    const dueDate=parseScheduleDate(item?.due);
    if(dueDate)dueSort=Math.ceil((dueDate-new Date())/86400000);
    else if(Number.isFinite(percent))dueSort=percent;
@@ -2113,23 +2127,18 @@ function maintenance(){
  const maintenance=activeMaintenance();
  const mc=maintenanceCounts();
  const completed=completedServiceCount();
- const onTrack=maintenance.filter(m=>{const status=effectiveMaintenanceStatus(m);return status!=='Overdue'&&status!=='Completed'&&!String(status).toLowerCase().includes('soon')}).length;
- const standardUpcoming=onTrack;
- const filterTabs=[
-   {key:'All',label:'All Items',count:maintenance.length},
-   {key:'Needs Attention',label:'Needs Attention',count:mc.overdue+mc.due},
-   {key:'Upcoming',label:'Upcoming',count:standardUpcoming},
-   {key:'Completed',label:'Completed',count:maintenance.filter(m=>effectiveMaintenanceStatus(m)==='Completed'||GarageLogMaintenanceCycles.completionHistory(m).length).length},
-   {key:'Custom',label:'Custom',count:maintenance.filter(isCustomMaintenance).length}
- ];
+ const onTrack=mc.track;
  const maintenanceSearch=normalizedSearchQuery(current==='Maintenance'?topSearchQuery:'');
- const items=maintenance.filter(m=>(
-   currentFilter==='All'||
-   (currentFilter==='Needs Attention'&&(effectiveMaintenanceStatus(m)==='Overdue'||String(effectiveMaintenanceStatus(m)).toLowerCase().includes('soon')))||
-   (currentFilter==='Upcoming'&&effectiveMaintenanceStatus(m)!=='Overdue'&&effectiveMaintenanceStatus(m)!=='Completed'&&!String(effectiveMaintenanceStatus(m)).toLowerCase().includes('soon'))||
-   (currentFilter==='Completed'&&(effectiveMaintenanceStatus(m)==='Completed'||GarageLogMaintenanceCycles.completionHistory(m).length>0))||
-   (currentFilter==='Custom'&&isCustomMaintenance(m))
- )&&maintenanceMatchesTopSearch(m,maintenanceSearch));
+ const matchingSearch=maintenance.filter(item=>maintenanceMatchesTopSearch(item,maintenanceSearch));
+ const countFilter=filter=>matchingSearch.filter(item=>maintenanceMatchesFilter(item,filter)).length;
+ const filterTabs=[
+   {key:'All',label:'All Items',count:matchingSearch.length},
+   {key:'Needs Attention',label:'Needs Attention',count:countFilter('Needs Attention')},
+   {key:'Upcoming',label:'Upcoming',count:countFilter('Upcoming')},
+   {key:'Completed',label:'Completed',count:countFilter('Completed')},
+   {key:'Custom',label:'Custom',count:countFilter('Custom')}
+ ];
+ const items=matchingSearch.filter(item=>maintenanceMatchesFilter(item,currentFilter));
  const maintenanceIntervalSortMeta=item=>{const text=String(item?.interval||item?.rule||'').toLowerCase(),value=parseMileageValue(text);if(/\bmi\b|mile/.test(text))return[0,value,String(item?.name||'')];const match=text.replaceAll(',','').match(/(-?\d+(?:\.\d+)?)\s*(days?|weeks?|months?|years?)/i);if(match){const amount=Number(match[1]),unit=match[2].toLowerCase(),days=unit.startsWith('year')?amount*365.25:unit.startsWith('month')?amount*30.4375:unit.startsWith('week')?amount*7:amount;return[1,days,String(item?.name||'')]}return[2,null,text,String(item?.name||'')]};
  const maintenanceDueSortMeta=item=>{const due=String(item?.due||''),mileage=/\bmi\b|mile/i.test(due)?parseMileageValue(due):null;if(mileage!==null)return[0,mileage,String(item?.name||'')];const date=parseScheduleDate(due);if(date)return[1,date.getTime(),String(item?.name||'')];return[2,null,String(item?.name||'')]};
  const maintenanceStatusSortMeta=item=>{const priority=maintenancePriorityMeta(item);return[priority.rank,priority.percent,priority.dueSort,String(item?.name||'')]};
@@ -2149,7 +2158,7 @@ function maintenance(){
  return `<div class="maintenance-page"><div class="maintenance-workspace"><div class="maintenance-main-column">`+
  pageHead('Maintenance','Track, plan, and manage service intervals for the active vehicle.',primary('Add Maintenance',"openModal('service')"))+
  otherVehicleRecordNotice('maintenance','maintenance item')+
- `<div class="maintenance-tabs">${filterTabs.map(tab=>`<button class="${currentFilter===tab.key?'active':''}" onclick="setFilter('${tab.key}')"><span>${tab.label}</span><b>${tab.count}</b></button>`).join('')}</div>
+ `<div class="maintenance-tabs">${filterTabs.map(tab=>`<button class="${currentFilter===tab.key?'active':''}" onclick="setFilter('${tab.key}')"${tab.key==='Upcoming'?' title="Scheduled within 90 days or within the final 50% of a mileage interval, before the due-soon threshold"':''}><span>${tab.label}</span><b>${tab.count}</b></button>`).join('')}</div>
    <section class="card maintenance-list-card">
      <div class="maintenance-list-head">
        <span>Maintenance Item</span><span>${listSortHeader('Interval','maintenance','interval')}</span><span>${listSortHeader('Status / Progress','maintenance','status')}</span><span>${listSortHeader('Next Due','maintenance','nextDue')}</span><span>Action</span>

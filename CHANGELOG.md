@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.8.28 - Maintenance filters and badge accuracy
+
+- Use the same maintenance classification for the summary, tab counts, sorted priorities, and filtered rows.
+- Prevent incomplete checklists from being counted as due-soon solely because checklist completion is low.
+- Reserve **Needs Attention** for overdue, due-soon, or explicitly urgent maintenance.
+- Make **Upcoming** a useful near-term filter: service due within 90 days, or mileage schedules in the final half of the interval before the due-soon threshold.
+- Recompute tab badges from the current page search, so their counts match visible filtered rows.
+- Preserve the existing remaining-life fuel-gauge direction and recurring maintenance service history.
+- Add maintenance-filter regression tests.
+
 ## 0.8.14 - Real pump photo OCR path
 
 - Added a conservative first-pass reader for large reflective pump faces captured directly by a phone camera.
