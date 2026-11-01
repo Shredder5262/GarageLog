@@ -45,18 +45,21 @@
   const schedule=interval(item,reminder);
   const actualDate=isoDate(date);
   const actualMileage=finiteMileage(mileage);
-  if(!actualDate&&!legacy&&!(correction&&schedule?.kind==='mileage'&&!existing?.date))throw new Error('Enter a valid service date.');
+  if(!actualDate&&!legacy&&!(correction&&schedule?.kind==='mileage'&&!completionHistory(item).at(-1)?.date))throw new Error('Enter a valid service date.');
   if(schedule?.kind==='mileage'&&actualMileage===null)throw new Error('Enter the mileage when the service was performed.');
   const previous=completionHistory(item),existing=correction?previous.at(-1):null;
   if(correction&&!existing)throw new Error('There is no completed service to correct.');
   if(!correction&&previous.some(x=>x.date===actualDate&&x.mileage===actualMileage))throw new Error('This service completion is already recorded.');
-  const completion={id:existing?.id||id||`completed-${Date.now()}`,date:actualDate,mileage:actualMileage,legacy:Boolean(legacy),mileageSource:legacy?'previous-due':'recorded',previousDue:existing?.previousDue||String(item.due||''),recordedAt:existing?.recordedAt||new Date().toISOString()};
+  const checklistSnapshot=Array.isArray(item.checklist)?item.checklist.map(entry=>typeof entry==='string'?{label:entry,completed:false}:{...entry}):null;
+  const completion={id:existing?.id||id||`completed-${Date.now()}`,date:actualDate,mileage:actualMileage,legacy:Boolean(legacy),mileageSource:legacy?'previous-due':'recorded',previousDue:existing?.previousDue||String(item.due||''),recordedAt:existing?.recordedAt||new Date().toISOString(),...(checklistSnapshot?.length?{checklist:correction&&existing?.checklist?existing.checklist.map(entry=>({...entry})):checklistSnapshot}:{})};
   const completions=correction?[...previous.slice(0,-1),completion]:[...previous,completion];
-  const nextItem={...item,completions,lastCompletedAt:actualDate,lastCompletedMileage:actualMileage,completedAt:actualDate||item.completedAt||null};
+  const nextItem={...item,completions,lastCompletedAt:actualDate,lastCompletedMileage:actualMileage,completedAt:actualDate||item.completedAt||null,checklistCyclePending:Boolean(schedule&&checklistSnapshot?.length)};
   const nextReminder=reminder?{...reminder}:null;
   for(const target of [nextItem,nextReminder]){
    if(!target)continue;
    target.completedAt=actualDate||target.completedAt||null;
+   target.postponedUntil=null;
+   target.postponeReason=null;
    target.lastCompletedAt=actualDate;
    target.lastCompletedMileage=actualMileage;
    if(schedule?.kind==='mileage'){

@@ -8,6 +8,11 @@
  const UPCOMING_PERCENT=50;
  const UPCOMING_DAYS=90;
  const DAY_MS=86400000;
+ // Gauge color thresholds are independent of the warning/due classification.
+ function serviceGaugeTone(percent,overdue=false){
+   const remaining=Math.max(0,Math.min(100,Number(percent)||0));
+   return overdue||remaining<=20?'gauge-danger':remaining<=50?'gauge-warning':'gauge-healthy';
+ }
  function classify({status='',priority='',percent=null,hasProgress=false,isChecklist=false,
    mileage=null,dueDate=null,now=Date.now()}={}){
    const normalized=String(status||'').trim().toLowerCase();
@@ -59,5 +64,5 @@
    if(filter==='Custom')return custom;
    return false;
  }
- return{classify,matchesFilter,summarize,WARNING_PERCENT,UPCOMING_PERCENT,UPCOMING_DAYS};
+ return{classify,matchesFilter,summarize,serviceGaugeTone,WARNING_PERCENT,UPCOMING_PERCENT,UPCOMING_DAYS};
 });

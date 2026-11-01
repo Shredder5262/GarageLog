@@ -3330,3 +3330,13 @@
 .maintenance-history-entry{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;padding:11px;border:1px solid var(--border);border-radius:9px}
 .maintenance-history-entry strong{font-size:12px}.maintenance-history-entry span{font-size:12px;font-weight:650}.maintenance-history-entry small{width:100%;color:var(--muted);font-size:11px}
 @media(max-width:520px){.maintenance-completion-dialog .modal-actions,.maintenance-history-dialog .modal-actions{flex-wrap:wrap}.maintenance-completion-dialog .modal-actions button,.maintenance-history-dialog .modal-actions button{flex:1}}
+
+/* 0.8.30: checklist cycle warnings and completed-state badge. */
+.maintenance-checklist-progress-row{display:flex;align-items:center;gap:8px;width:100%}
+.maintenance-checklist-progress-row .maintenance-life-progress{flex:1;min-width:0}
+.maintenance-checklist-alert{display:inline-flex;flex:none;align-items:center;justify-content:center;color:#dc2626;cursor:help}
+.maintenance-checklist-alert svg{width:18px;height:18px;stroke-width:2.1}
+.maintenance-checklist-complete{display:inline-flex;align-items:center;gap:6px;width:max-content;padding:5px 10px;border-radius:8px;border:1px solid #86efac;background:#f0fdf4;color:#166534;font-size:12px;font-weight:700}
+.maintenance-checklist-complete svg{width:15px;height:15px}
+
+.maintenance-progress-cell .maintenance-checklist-progress-row .status-progress.remaining-life{flex:1 1 auto;min-width:0}

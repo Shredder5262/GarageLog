@@ -75,7 +75,6 @@ const NAV_ICON_PATHS={
  Reports:'/assets/navigation/reports.png'
 };
 const MAINTENANCE_WARNING_PERCENT=25;
-const MAINTENANCE_DANGER_PERCENT=10;
 const nativeGarageLogFetch=window.fetch.bind(window);
 window.fetch=function(input,init={}){
  const requestUrl=new URL(typeof input==='string'?input:input.url,window.location.href),method=String(init.method||(typeof input==='object'&&input?.method)||'GET').toUpperCase();
@@ -1415,9 +1414,13 @@ function expenseTotals(vehicleId=state.activeVehicleId){
  }
  return{total,yearly,maintenance,fuel,trackedMiles,trackedCost,costPerMile,trackingStart,trackingEnd,readingCount:readings.length}
 }
+function maintenanceHasCompletion(item){
+ const checked=checklistItemsFromRecord(item);
+ return GarageLogMaintenanceCycles.completionHistory(item).length>0||(checked.length>0&&checked.every(entry=>entry.completed));
+}
 function maintenanceCounts(vehicleId=state.activeVehicleId,items=recordsFor('maintenance',vehicleId)){
  return GarageLogMaintenanceFilters.summarize(items.map(item=>({
-   bucket:maintenanceBucket(item),hasHistory:GarageLogMaintenanceCycles.completionHistory(item).length>0
+   bucket:maintenanceBucket(item),hasHistory:maintenanceHasCompletion(item)
  })));
 }
 
@@ -1454,15 +1457,15 @@ function effectiveMaintenanceStatus(item){
 function effectiveReminderStatus(item){return mileageScheduleMeta(item)?.status||item?.status||'Upcoming'}
 function remainingLifeGauge(percent,status){
  const value=Math.min(100,Math.max(0,Number(percent||0))),overdue=/overdue/i.test(String(status||''));
- return{percent:value,tone:overdue||value<=MAINTENANCE_DANGER_PERCENT?'gauge-danger':value<=MAINTENANCE_WARNING_PERCENT?'gauge-warning':'gauge-healthy',width:value>0?Math.max(4,value):4}
+ return{percent:value,tone:GarageLogMaintenanceFilters.serviceGaugeTone(value,overdue),width:value>0?Math.max(4,value):4}
 }
 function maintenanceGaugeMeta(item,meta=maintenanceProgressMeta(item),status=effectiveMaintenanceStatus(item)){
  const statusText=String(status||'').toLowerCase();
- if(statusText==='completed')return{percent:100,tone:'gauge-healthy',width:100};
  if(meta?.checklist){
-   const value=Math.min(100,Math.max(0,Number(meta.percent||0)));
-   return{percent:value,tone:value>=100?'gauge-healthy':'gauge-progress',width:value>0?Math.max(4,value):0};
+   const view=GarageLogMaintenanceChecklists.presentation(item,maintenanceBucket(item));
+   return{percent:view.percent,tone:view.tone,width:view.percent>0?Math.max(4,view.percent):0,checklistView:view};
  }
+ if(statusText==='completed')return{percent:100,tone:'gauge-healthy',width:100};
  if(!meta||(!meta.detail&&!meta.mileage))return{percent:0,tone:'gauge-neutral',width:0};
  return remainingLifeGauge(meta.percent,status)
 }
@@ -2008,13 +2011,13 @@ function maintenanceDescription(name){
  return'Owner-defined maintenance item'
 }
 function maintenanceProgressMeta(item){
- const mileage=mileageScheduleMeta(item);
- if(mileage)return{percent:mileage.percent,label:mileage.label,detail:mileage.detail,checklist:false,mileage:true,status:mileage.status,beforeStart:mileage.beforeStart};
  const checklist=checklistItemsFromRecord(item);
  if(checklist.length){
    const completed=checklist.filter(entry=>entry.completed).length,total=checklist.length,remaining=total-completed;
    return{percent:Math.round(completed/total*100),label:completed===total?'Checklist complete':`${remaining} checklist item${remaining===1?'':'s'} remaining`,detail:`${completed} / ${total} checklist items`,checklist:true,completed,total,status:item?.status}
  }
+ const mileage=mileageScheduleMeta(item);
+ if(mileage)return{percent:mileage.percent,label:mileage.label,detail:mileage.detail,checklist:false,mileage:true,status:mileage.status,beforeStart:mileage.beforeStart};
  const progress=Number(item?.progress||0),max=Math.max(0,Number(item?.max||0));
  const interval=String(item?.interval||'').toLowerCase();
  if(!max)return{percent:0,label:'No interval configured',detail:'',status:item?.status};
@@ -2035,7 +2038,7 @@ function maintenanceBucket(item){
 }
 function maintenanceMatchesFilter(item,filter){
  return GarageLogMaintenanceFilters.matchesFilter(maintenanceBucket(item),filter,{
-   custom:isCustomMaintenance(item),hasHistory:GarageLogMaintenanceCycles.completionHistory(item).length>0
+   custom:isCustomMaintenance(item),hasHistory:maintenanceHasCompletion(item)
  });
 }
 function maintenancePriorityMeta(item){
@@ -2096,10 +2099,30 @@ window.openMaintenanceCompletion=function(index,correction=false){
 window.openMaintenanceHistory=function(index){
  const item=state.maintenance[index];if(!item)return;
  const entries=GarageLogMaintenanceCycles.completionHistory(item),dialog=ensureDynamicDialog('maintenanceHistoryDialog','maintenance-history-dialog');
- dialog.innerHTML=`<div class="modal-header"><div><h3>Service history</h3><p>${esc(item.name)}</p></div><button type="button" class="icon-btn maintenance-history-close">${svg('close')}</button></div><div class="maintenance-history-body">${entries.length?entries.slice().reverse().map(entry=>`<div class="maintenance-history-entry"><strong>${esc(entry.date||'Date not recorded')}</strong><span>${entry.mileage!==null&&entry.mileage!==undefined?`${number(entry.mileage)} mi`:'Time-based service'}</span>${entry.legacy?'<small>Imported from previous completed schedule — verify if needed</small>':''}</div>`).join(''):'<p>No completed services recorded.</p>'}</div><div class="modal-actions"><button type="button" class="secondary maintenance-history-close-bottom">Close</button>${entries.length&&canWrite()?'<button type="button" class="primary maintenance-history-correct">Correct last service</button>':''}</div>`;
+ dialog.innerHTML=`<div class="modal-header"><div><h3>Service history</h3><p>${esc(item.name)}</p></div><button type="button" class="icon-btn maintenance-history-close">${svg('close')}</button></div><div class="maintenance-history-body">${entries.length?entries.slice().reverse().map(entry=>`<div class="maintenance-history-entry"><strong>${esc(entry.date||'Date not recorded')}</strong><span>${entry.mileage!==null&&entry.mileage!==undefined?`${number(entry.mileage)} mi`:'Time-based service'}</span>${entry.legacy?'<small>Imported from previous completed schedule — verify if needed</small>':''}${Array.isArray(entry.checklist)&&entry.checklist.length?`<small>Checklist snapshot: ${entry.checklist.filter(task=>task.completed).length}/${entry.checklist.length} completed</small>`:''}</div>`).join(''):'<p>No completed services recorded.</p>'}</div><div class="modal-actions"><button type="button" class="secondary maintenance-history-close-bottom">Close</button>${entries.length&&canWrite()?'<button type="button" class="primary maintenance-history-correct">Correct last service</button>':''}</div>`;
  dialog.querySelectorAll('.maintenance-history-close,.maintenance-history-close-bottom').forEach(button=>button.onclick=()=>dialog.close());
  const correct=dialog.querySelector('.maintenance-history-correct');if(correct)correct.onclick=()=>{dialog.close();openMaintenanceCompletion(index,true)};
  dialog.showModal()
+};
+window.openChecklistPostponement=function(index){
+ if(!canWrite()){toast('Read-only accounts cannot update maintenance');return}
+ const item=state.maintenance[index];if(!item||!checklistItemsFromRecord(item).length)return;
+ const dialog=ensureDynamicDialog('checklistPostponeDialog','maintenance-completion-dialog');
+ dialog.innerHTML=`<div class="modal-header"><div><h3>Plan checklist follow-up</h3><p>${esc(item.name)}</p></div><button type="button" class="icon-btn postpone-close">${svg('close')}</button></div>
+ <form class="maintenance-completion-form"><p>The original due date (${esc(item.due||'not set')}) and any overdue warning will remain unchanged. This simply records when you plan to revisit the checklist.</p>
+ <label>Follow-up date<input type="date" name="followup" required min="${localServiceDate()}" value="${esc(item.postponedUntil||localServiceDate())}"></label>
+ <label>Reason (optional)<input type="text" name="reason" maxlength="300" value="${esc(item.postponeReason||'')}" placeholder="e.g. Waiting for supplies"></label>
+ <div class="modal-actions"><button type="button" class="secondary postpone-cancel">Cancel</button>${item.postponedUntil?'<button type="button" class="secondary postpone-clear">Clear follow-up</button>':''}<button type="submit" class="primary">Save follow-up</button></div></form>`;
+ dialog.querySelectorAll('.postpone-close,.postpone-cancel').forEach(button=>button.onclick=()=>dialog.close());
+ const linked=state.reminders.find(r=>r.id===item.reminderId||r.maintenanceId===item.id);
+ const apply=async (date,reason)=>{
+  const recordedAt=new Date().toISOString(),entry={date,reason,originalDue:item.due,recordedAt};
+  for(const target of [item,linked]){if(!target)continue;target.postponedUntil=date;target.postponeReason=reason;target.postponements=[...(target.postponements||[]),entry]}
+  await saveNow();dialog.close();toast(date?'Follow-up saved; original deadline preserved':'Follow-up cleared; original deadline preserved');render();
+ };
+ dialog.querySelector('form').onsubmit=async event=>{event.preventDefault();const form=event.currentTarget,data=new FormData(form),date=String(data.get('followup')||'');if(!GarageLogMaintenanceCycles.isoDate(date)||date<localServiceDate()){toast('Choose today or a future follow-up date');return}await apply(date,String(data.get('reason')||'').trim())};
+ const clear=dialog.querySelector('.postpone-clear');if(clear)clear.onclick=()=>apply(null,'');
+ dialog.showModal();
 };
 function maintenanceRowActions(index){
  const item=state.maintenance[index],hasChecklist=Array.isArray(item?.checklist)&&item.checklist.length>0;
@@ -2109,7 +2132,8 @@ function maintenanceRowActions(index){
      <summary aria-label="More actions">${svg('chevronDown')}</summary>
      <div class="maintenance-more-menu">
        ${hasChecklist?`<button type="button" onclick="openRecordChecklist('maintenance',${index})">${svg('check')} View checklist</button>`:''}
-       <button type="button" onclick="openMaintenanceCompletion(${index})">${svg('check')} Mark service completed</button>
+       ${!hasChecklist||checklistItemsFromRecord(item).every(entry=>entry.completed)&&!GarageLogMaintenanceCycles.completionHistory(item).length?`<button type="button" onclick="openMaintenanceCompletion(${index})">${svg('check')} ${hasChecklist?'Record completed checklist':'Mark service completed'}</button>`:''}
+       ${hasChecklist?`<button type="button" onclick="openChecklistPostponement(${index})">${svg('calendar')} Plan follow-up (keep due date)</button>`:''}
        ${GarageLogMaintenanceCycles.completionHistory(item).length?`<button type="button" onclick="openMaintenanceHistory(${index})">${svg('calendar')} Service history</button>`:''}
        <button type="button" onclick="editRecord('maintenance',${index})">${svg('edit')} Edit item</button>
        <button type="button" class="delete" onclick="deleteRecord('maintenance',${index})">${svg('trash')} Delete item</button>
@@ -2160,6 +2184,7 @@ function maintenance(){
      <div class="maintenance-record-list">
        ${sortedItems.length?sortedItems.map(m=>{
          const i=state.maintenance.indexOf(m),meta=maintenanceProgressMeta(m),tone=maintenanceTone(m.name),effectiveStatus=effectiveMaintenanceStatus(m),gauge=maintenanceGaugeMeta(m,meta,effectiveStatus);
+         const checklistView=gauge.checklistView;
          const dueSub=effectiveStatus==='Completed'?'Service completed':meta.label;
          return `<article class="maintenance-record" data-search-key="maintenance:${i}">
            <div class="maintenance-item-cell">
@@ -2168,12 +2193,13 @@ function maintenance(){
            </div>
            <div class="maintenance-interval"><strong>${esc(m.interval)}</strong><small>${String(m.interval||'').toLowerCase().includes('mi')?'Mileage based':'Time based'}</small></div>
            <div class="maintenance-progress-cell">
-             <div class="status-progress remaining-life maintenance-life-progress ${gauge.tone}" role="meter" aria-label="${esc(m.name)} ${meta.checklist?'checklist progress':'service life remaining'}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(gauge.percent)}" title="${meta.checklist?`${Math.round(gauge.percent)}% of checklist completed`:`${Math.round(gauge.percent)}% of the service interval remaining`}"><span style="width:${gauge.width}%"></span></div>
-             <small class="${gauge.tone==='gauge-danger'?'status-bad':gauge.tone==='gauge-warning'?'status-warn':''}">${esc(meta.detail)}</small>
+             ${checklistView?.complete?`<div class="maintenance-checklist-complete" title="${checklistView.locked?'Completed for the previous cycle; the next checklist opens during the upcoming window':'All checklist tasks completed'}">${svg('check')} Completed</div>`:`<div class="maintenance-checklist-progress-row"><div class="status-progress remaining-life maintenance-life-progress ${gauge.tone}" role="meter" aria-label="${esc(m.name)} ${meta.checklist?'checklist progress':'service life remaining'}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(gauge.percent)}" title="${meta.checklist?`${Math.round(gauge.percent)}% of checklist completed`:`${Math.round(gauge.percent)}% of the service interval remaining`}"><span style="width:${gauge.width}%"></span></div>${checklistView?.warning?`<span class="maintenance-checklist-alert" role="img" aria-label="${checklistView.label}" title="${checklistView.label}">${svg('warning')}</span>`:''}</div>`}
+             <small class="${checklistView?.tone==='gauge-danger'||gauge.tone==='gauge-danger'?'status-bad':gauge.tone==='gauge-warning'?'status-warn':''}">${esc(checklistView?.locked?'Next checklist opens when approaching due':checklistView?.label==='Overdue'?'Overdue · '+meta.detail:meta.detail)}</small>
            </div>
            <div class="maintenance-due-cell">
              <strong class="${effectiveStatus==='Overdue'?'status-bad':''}">${esc(m.due||'Not scheduled')}</strong>
              <small class="${gauge.tone==='gauge-danger'?'status-bad':gauge.tone==='gauge-warning'?'status-warn':'status-good'}">${esc(dueSub)}</small>
+             ${m.postponedUntil?`<small title="Original maintenance deadline is retained. Follow-up does not clear overdue warnings.">Follow-up planned ${esc(m.postponedUntil)}</small>`:''}
              ${GarageLogMaintenanceCycles.completionHistory(m).length?`<small>${GarageLogMaintenanceCycles.completionHistory(m).length} completed service${GarageLogMaintenanceCycles.completionHistory(m).length===1?'':'s'} recorded</small>`:''}
            </div>
            ${maintenanceRowActions(i)}
@@ -2185,12 +2211,12 @@ function maintenance(){
    </div>
    <aside class="maintenance-side">
      <section class="card maintenance-summary-card">
-       <div class="maintenance-card-heading"><h3>Maintenance Summary</h3><span title="Counts are for the active vehicle and current search. On Track excludes Upcoming. Completed counts schedules with recorded service history, not expenses.">${svg('info')}</span></div>
+       <div class="maintenance-card-heading"><h3>Maintenance Summary</h3><span title="Counts are for the active vehicle and current search. On Track excludes Upcoming. Completed counts schedules with recorded service history or fully checked legacy checklists, not expenses.">${svg('info')}</span></div>
        <div class="maintenance-summary-grid">
          <div><strong class="status-bad">${mc.overdue}</strong><b>Overdue</b><small>Needs immediate attention</small></div>
          <div><strong class="status-warn">${mc.due}</strong><b>Due Soon</b><small>Approaching its interval</small></div>
          <div><strong class="summary-blue">${onTrack}</strong><b>On Track</b><small>Outside upcoming window · ${mc.upcoming} upcoming</small></div>
-         <div><strong class="status-good">${completed}</strong><b>Completed</b><small>Schedules with service history</small></div>
+         <div><strong class="status-good">${completed}</strong><b>Completed</b><small>Serviced or checklist completed</small></div>
        </div>
      </section>
      <section class="card maintenance-mileage-card">
@@ -3303,16 +3329,36 @@ function openChecklistDialog(title,subtitle,items,context){
 }
 window.openWizardChecklistByName=function(name){const item=reminderTemplateByName(name),available=templateChecklistFor(item);if(!available.length){toast('This template does not include a checklist');return}const selectedIds=new Set((reminderWizardState?.checklist||[]).map(entry=>entry.id));openChecklistDialog(item.name,item.description,available.map(entry=>({...entry,selected:selectedIds.has(entry.id)})),{mode:'wizard',templateName:name})};
 window.openTemplateChecklistByName=function(name){if(reminderWizardState&&document.getElementById('reminderWizard').open){openWizardChecklistByName(name);return}const item=reminderTemplateByName(name),items=templateChecklistFor(item);if(!items.length){toast('This template does not include a checklist');return}openChecklistDialog(item.name,item.description,items,{mode:'preview',templateName:name})};
-window.openRecordChecklist=function(type,index){const collection=type==='maintenance'?state.maintenance:state.reminders,record=collection[index],items=type==='reminder'?reminderChecklistItems(record):checklistItemsFromRecord(record);if(!record||!items.length){toast('No checklist is attached to this item');return}if(type==='reminder'&&!checklistItemsFromRecord(record).length)record.checklist=items.map(item=>({...item}));openChecklistDialog(record.name,`${type==='maintenance'?'Maintenance':'Reminder'} checklist for ${vehicleFullName()}.`,items,{mode:'record',type,index})};
+window.openRecordChecklist=function(type,index){const collection=type==='maintenance'?state.maintenance:state.reminders,record=collection[index],items=type==='reminder'?reminderChecklistItems(record):checklistItemsFromRecord(record);if(!record||!items.length){toast('No checklist is attached to this item');return}if(type==='reminder'&&!checklistItemsFromRecord(record).length)record.checklist=items.map(item=>({...item}));const schedule=type==='maintenance'?record:state.maintenance.find(entry=>entry.id===record.maintenanceId||entry.reminderId===record.id);const locked=schedule&&GarageLogMaintenanceChecklists.awaitingNextCycle(schedule,maintenanceBucket(schedule));openChecklistDialog(record.name,`${type==='maintenance'?'Maintenance':'Reminder'} checklist for ${vehicleFullName()}.`,items,{mode:'record',type,index,locked:Boolean(locked)});if(locked){document.querySelectorAll('#checklistDialog [data-checklist-index]').forEach(input=>input.disabled=true);document.getElementById('checklistDialogSave').hidden=true;document.getElementById('checklistDialogBody').insertAdjacentHTML('afterbegin','<div class="checklist-preview-note">This cycle is completed. The next checklist will open when its due date enters the upcoming window. To correct the last completion, use Service History.</div>')}};
 async function saveChecklistProgress(){
- const context=checklistDialogContext;if(!context)return;
+ const context=checklistDialogContext;if(!context||context.saving)return;
  if(context.mode==='wizard'){const selected=context.items.filter((item,index)=>Boolean(document.querySelector(`#checklistDialog [data-checklist-index="${index}"]`)?.checked)).map(item=>({id:item.id,label:item.label,completed:false}));reminderWizardState.checklist=selected;reminderWizardState.checklistCustomized=true;document.getElementById('checklistDialog').close();toast(`${selected.length} checklist item${selected.length===1?'':'s'} selected`);renderReminderWizard();return}
- if(context.mode!=='record')return;const collection=context.type==='maintenance'?state.maintenance:state.reminders,record=collection[context.index];if(!record)return;const prior=checklistItemsFromRecord(record);record.checklist=prior.map((item,index)=>({...item,completed:Boolean(document.querySelector(`#checklistDialog [data-checklist-index="${index}"]`)?.checked)}));record.checklistUpdatedAt=new Date().toISOString();
- const applyChecklistProgress=target=>{if(!target)return;const items=checklistItemsFromRecord(target),completed=items.filter(item=>item.completed).length;target.progress=completed;target.max=items.length;target.checklistProgress=true;target.checklistUpdatedAt=record.checklistUpdatedAt};
- applyChecklistProgress(record);
- if(context.type==='reminder'&&record.maintenanceId){const linked=state.maintenance.find(item=>item.id===record.maintenanceId);if(linked){linked.checklist=record.checklist.map(item=>({...item}));applyChecklistProgress(linked)}}else if(context.type==='maintenance'&&record.reminderId){const linked=state.reminders.find(item=>item.id===record.reminderId);if(linked){linked.checklist=record.checklist.map(item=>({...item}));applyChecklistProgress(linked)}}
- await saveNow();document.getElementById('checklistDialog').close();toast('Checklist progress saved');render()
+ if(context.mode!=='record'||context.locked)return;
+ if(!canWrite()){toast('Read-only accounts cannot update checklists');return}
+ const collection=context.type==='maintenance'?state.maintenance:state.reminders,record=collection[context.index];if(!record)return;
+ context.saving=true;
+ const checked=context.items.map((_,index)=>Boolean(document.querySelector(`#checklistDialog [data-checklist-index="${index}"]`)?.checked));
+ const updated=GarageLogMaintenanceChecklists.progressUpdated(record,checked,new Date().toISOString());
+ const maintenance=context.type==='maintenance'?record:state.maintenance.find(item=>item.id===record.maintenanceId||item.reminderId===record.id);
+ const reminder=context.type==='reminder'?record:state.reminders.find(item=>item.id===record.reminderId||item.maintenanceId===record.id);
+ if(maintenance&&GarageLogMaintenanceChecklists.awaitingNextCycle(maintenance,maintenanceBucket(maintenance))){context.saving=false;toast('The next checklist cycle is not active yet');return}
+ const was=maintenance||record,nextForCompletion=context.type==='maintenance'?updated:maintenance?{...maintenance,checklist:updated.checklist}:updated;
+ const finished=GarageLogMaintenanceChecklists.finalStepJustChecked(was,nextForCompletion);
+ if(finished&&maintenance){
+   const schedule=GarageLogMaintenanceCycles.interval(maintenance,reminder);
+   const result=GarageLogMaintenanceCycles.recordCompletion(nextForCompletion,reminder?{...reminder,checklist:updated.checklist}:null,{date:localServiceDate(),mileage:recordVehicleMileage(maintenance),id:makeRecordId('completion')});
+   state.maintenance[state.maintenance.indexOf(maintenance)]=result.item;
+   if(reminder&&result.reminder)state.reminders[state.reminders.indexOf(reminder)]=result.reminder;
+ }else if(finished&&context.type==='reminder'){
+   collection[context.index]={...updated,status:'Completed',completedAt:new Date().toISOString()};
+ }else{
+   collection[context.index]=updated;
+   if(maintenance&&maintenance!==record){const i=state.maintenance.indexOf(maintenance);state.maintenance[i]=GarageLogMaintenanceChecklists.progressUpdated(maintenance,checked,updated.checklistUpdatedAt)}
+   if(reminder&&reminder!==record){const i=state.reminders.indexOf(reminder);state.reminders[i]=GarageLogMaintenanceChecklists.progressUpdated(reminder,checked,updated.checklistUpdatedAt)}
+ }
+ try{await saveNow();document.getElementById('checklistDialog').close();toast(finished?'Checklist completed; service recorded and next interval scheduled':'Checklist progress saved');render()}catch(error){toast(error.message||'Unable to save checklist')}finally{context.saving=false}
 }
+
 async function saveReminderWizard(){
  reminderWizardCollect();const s=reminderWizardState,maintenanceMode=s.mode==='maintenance';if(maintenanceMode)s.createMaintenance=true;if(!s.name?.trim()){toast(maintenanceMode?'Enter a maintenance name':'Enter a reminder name');s.step=2;renderReminderWizard();return}
  let due='',rule='',status='Upcoming';
@@ -3327,7 +3373,7 @@ async function saveReminderWizard(){
  await saveNow();document.getElementById('reminderWizard').close();toast(maintenanceMode?'Maintenance schedule and reminder created':existing?'Reminder rule updated':s.createMaintenance?'Reminder and maintenance item created':'Reminder rule created');render()
 }
 window.advanceReminderTimeline=function(){const count=activeReminders().filter(item=>String(item.status||'').toLowerCase()!=='completed').length;if(count<=4)return;reminderTimelineOffset=(reminderTimelineOffset+1)%count;render()};
-window.markReminderComplete=async function(index){const reminder=state.reminders[index];if(!reminder)return;const linkedIndex=state.maintenance.findIndex(item=>item.id===reminder.maintenanceId||item.reminderId===reminder.id);if(linkedIndex>=0){openMaintenanceCompletion(linkedIndex);return}reminder.status='Completed';reminder.completedAt=new Date().toISOString();await saveNow();toast('Reminder marked completed');render()};
+window.markReminderComplete=async function(index){const reminder=state.reminders[index];if(!reminder)return;const linkedIndex=state.maintenance.findIndex(item=>item.id===reminder.maintenanceId||item.reminderId===reminder.id);if(linkedIndex>=0){const linked=state.maintenance[linkedIndex];if(checklistItemsFromRecord(linked).some(entry=>!entry.completed)){openRecordChecklist('maintenance',linkedIndex);return}openMaintenanceCompletion(linkedIndex);return}reminder.status='Completed';reminder.completedAt=new Date().toISOString();await saveNow();toast('Reminder marked completed');render()};
 window.duplicateReminderRule=async function(index){const source=state.reminders[index];if(!source)return;const copy={...source,id:makeRecordId('reminder'),name:`${source.name} Copy`,status:'Upcoming',createdAt:new Date().toISOString(),updatedAt:null,maintenanceId:null,checklist:checklistItemsFromRecord(source).map(item=>({...item,completed:false}))};delete copy.maintenanceId;state.reminders.unshift(copy);await saveNow();toast('Reminder rule duplicated');render()};
 window.deleteReminderRule=async function(index){const reminder=state.reminders[index];if(!reminder)return;state.maintenance=state.maintenance.filter(item=>item.id!==reminder.maintenanceId&&item.reminderId!==reminder.id);state.reminders.splice(index,1);await saveNow();toast('Reminder and associated checklist removed');render()};
 
@@ -3393,6 +3439,7 @@ document.getElementById('modalForm').addEventListener('submit',async e=>{if(e.su
    const existing=index!==null?state.maintenance[index]:null;
    let x={...existing,id:existing?.id||makeRecordId('maintenance'),vehicleId:existing?.vehicleId||state.activeVehicleId,name:fd.get('Service Name'),interval:fd.get('Interval'),progress:Number(fd.get('Progress')),max:Number(fd.get('Interval Value')),due:fd.get('Next Due'),status:fd.get('Status')};
    if(x.status==='Completed'&&existing?.status!=='Completed'){
+     if(checklistItemsFromRecord(x).some(entry=>!entry.completed))throw new Error('Complete all checklist steps first; the service will be recorded automatically.');
      const linked=state.reminders.find(r=>r.id===x.reminderId||r.maintenanceId===x.id);
      const result=GarageLogMaintenanceCycles.recordCompletion(x,linked,{date:fd.get('Service Date'),mileage:fd.get('Service Mileage'),id:makeRecordId('completion')});
      x=result.item;if(linked&&result.reminder)state.reminders[state.reminders.indexOf(linked)]=result.reminder;

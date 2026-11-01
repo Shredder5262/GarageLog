@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.8.30 - Checklist cycles and warning visuals
+
+- Show blue progress for incomplete checklists, red warnings when due soon or upcoming, and red progress/overdue labels when past due.
+- Replace finished checklist bars with a Completed badge, and display the next blank checklist when its next cycle enters Upcoming.
+- Keep the Completed filter/summary aligned with the Completed badge, including already-checked legacy checklists without inventing a service date.
+- Automatically record the service after the final checklist task is checked; advance recurring schedules using the actual service date and current mileage, reset the checklist for its next cycle, and update linked reminders.
+- Preserve a snapshot of each completed checklist in service history; allow corrections without duplicate completions.
+- Offer a follow-up date for deferred checklist work without changing the original due date or dismissing overdue warnings.
+- Set mileage-based fuel-gauge coloring to green above 50% life remaining, yellow from above 20% through 50%, and red at 20% or lower. Do not change the separate Due Soon / Upcoming classification thresholds.
+- Add independent checklist cycle regression tests and retain all earlier maintenance-cycle/filter tests.
+- Existing all-checked checklists without a service-history entry can be explicitly recorded via the maintenance action menu; the app does not invent past completion dates.
+
+
 ## 0.8.29 - Maintenance summary consistency
 
 - Align Maintenance Summary with the same active schedule classifications used by the filter tabs.
